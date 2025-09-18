@@ -15,6 +15,9 @@ from app.models.user import User
 from pydantic import BaseModel, field_validator
 from datetime import datetime
 import logging
+from fastapi import BackgroundTasks
+from datetime import datetime
+import asyncio
 import json
 
 logger = logging.getLogger(__name__)
@@ -369,6 +372,216 @@ async def get_cves(
     except Exception as e:
         logger.error(f"Failed to get CVEs: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to retrieve CVEs: {str(e)}")
+    
+@router.post("/enhance-collection")
+async def enhanced_cve_collection(
+    background_tasks: BackgroundTasks,
+    days_back: int = 7,
+    use_files: bool = True,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Enhanced CVE collection using your updated collector"""
+    if current_user.role not in ["admin", "manager"]:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    
+    async def run_enhanced_collection():
+        try:
+            from app.services.cve_collector import CVECollector
+            
+            collector = CVECollector()
+            await collector.run_service_specific_collection(
+                db, 
+                days_back=days_back, 
+                use_files=use_files
+            )
+            
+            logger.info(f"Enhanced CVE collection completed for last {days_back} days (use_files={use_files})")
+        except Exception as e:
+            logger.error(f"Enhanced CVE collection failed: {e}")
+    
+    background_tasks.add_task(run_enhanced_collection)
+    
+    return {
+        "message": f"Enhanced CVE collection started for last {days_back} days",
+        "method": "file_download" if use_files else "api_calls",
+        "status": "queued"
+    }
+    
+@router.get("/collection-stats")
+async def get_collection_stats(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get CVE collection statistics"""
+    try:
+        from sqlalchemy import func
+        from datetime import timedelta
+        
+        # Get basic counts
+        total_cves = db.query(func.count(CVE.id)).scalar() or 0
+        
+        # Get recent CVEs
+        now = datetime.now()
+        yesterday = now - timedelta(days=1)
+        last_week = now - timedelta(days=7)
+        
+        cves_last_24h = db.query(func.count(CVE.id)).filter(
+            CVE.published_date >= yesterday
+        ).scalar() or 0
+        
+        cves_last_week = db.query(func.count(CVE.id)).filter(
+            CVE.published_date >= last_week
+        ).scalar() or 0
+        
+        # Get severity breakdown
+        severity_stats = db.query(
+            CVE.severity,
+            func.count(CVE.id).label('count')
+        ).group_by(CVE.severity).all()
+        
+        severity_breakdown = {}
+        for severity, count in severity_stats:
+            severity_breakdown[severity or 'UNKNOWN'] = count
+        
+        return {
+            "total_cves": total_cves,
+            "cves_last_24h": cves_last_24h,
+            "cves_last_week": cves_last_week,
+            "severity_breakdown": severity_breakdown,
+            "last_updated": now.isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get collection stats: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get statistics")
+
+@router.post("/manual-collect")
+async def manual_cve_collection(
+    days_back: int = 7,
+    use_files: bool = True,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    
+    """Manual CVE collection with immediate response"""
+    if current_user.role not in ["admin", "manager"]:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    
+    try:
+        from app.services.cve_collector import CVECollector
+        
+        start_time = datetime.now()
+        collector = CVECollector()
+        
+        # Run collection
+        await collector.run_service_specific_collection(
+            db, 
+            days_back=days_back, 
+            use_files=use_files
+        )
+        
+        execution_time = (datetime.now() - start_time).total_seconds()
+        
+        # Get updated stats
+        from sqlalchemy import func
+        total_cves = db.query(func.count(CVE.id)).scalar() or 0
+        
+        return {
+            "success": True,
+            "message": f"CVE collection completed in {execution_time:.2f} seconds",
+            "method": "file_download" if use_files else "api_calls",
+            "days_processed": days_back,
+            "total_cves_in_db": total_cves,
+            "execution_time": execution_time
+        }
+        
+    except Exception as e:
+        logger.error(f"Manual CVE collection failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Collection failed: {str(e)}")
+    
+@router.get("/test-file-download")
+async def test_file_download(
+    year: int = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Test CVE file download functionality"""
+    if current_user.role not in ["admin", "manager"]:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    
+    try:
+        from app.services.cve_collector import CVECollector
+        
+        collector = CVECollector()
+        
+        # Use current year if not specified
+        if year is None:
+            year = datetime.now().year
+        
+        # Test download for specific year
+        file_path = await collector.download_cve_file(year, force_download=True)
+        
+        if file_path:
+            # Get file info
+            file_size = file_path.stat().st_size
+            return {
+                "success": True,
+                "message": f"Successfully downloaded CVE file for {year}",
+                "file_path": str(file_path),
+                "file_size_mb": round(file_size / (1024 * 1024), 2),
+                "year": year
+            }
+        else:
+            return {
+                "success": False,
+                "message": f"Failed to download CVE file for {year}",
+                "year": year
+            }
+            
+    except Exception as e:
+        logger.error(f"File download test failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Download test failed: {str(e)}")
+    
+async def test_file_download(
+    year: int = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Test CVE file download functionality"""
+    if current_user.role not in ["admin", "manager"]:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    
+    try:
+        from app.services.cve_collector import CVECollector
+        
+        collector = CVECollector()
+        
+        # Use current year if not specified
+        if year is None:
+            year = datetime.now().year
+        
+        # Test download for specific year
+        file_path = await collector.download_cve_file(year, force_download=True)
+        
+        if file_path:
+            # Get file info
+            file_size = file_path.stat().st_size
+            return {
+                "success": True,
+                "message": f"Successfully downloaded CVE file for {year}",
+                "file_path": str(file_path),
+                "file_size_mb": round(file_size / (1024 * 1024), 2),
+                "year": year
+            }
+        else:
+            return {
+                "success": False,
+                "message": f"Failed to download CVE file for {year}",
+                "year": year
+            }
+            
+    except Exception as e:
+        logger.error(f"File download test failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Download test failed: {str(e)}")
 
 @router.get("/{cve_id}", response_model=CVEResponse)
 async def get_cve(
