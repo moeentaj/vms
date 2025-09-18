@@ -4,11 +4,11 @@ import { Plus, Info, Search, Loader, X, AlertTriangle, Shield, Calendar, Externa
 // Enhanced API service with better error handling and graceful degradation
 const api = {
   baseURL: 'http://localhost:8000/api/v1',
-  
-  request: async function(endpoint, options = {}) {
+
+  request: async function (endpoint, options = {}) {
     const token = localStorage.getItem('token');
     const url = `${this.baseURL}${endpoint}`;
-    
+
     const config = {
       headers: {
         'Content-Type': 'application/json',
@@ -37,29 +37,29 @@ const api = {
   },
 
   // Enhanced CVE fetching with better error handling
-  getCVEs: async function(params = {}) {
+  getCVEs: async function (params = {}) {
     try {
       const query = new URLSearchParams(params).toString();
       return await this.request(`/cves/?${query}`);
     } catch (error) {
       console.error('Failed to fetch CVEs:', error);
-      
+
       // If it's a 404, the endpoint might not exist
       if (error.message.includes('404')) {
         throw new Error('CVE endpoint not found. Please check your API configuration.');
       }
-      
+
       // If it's a 500, there might be a database issue
       if (error.message.includes('500')) {
         throw new Error('Server error. The database might be empty or misconfigured.');
       }
-      
+
       throw error;
     }
   },
 
   // Check if correlation features are available
-  checkCorrelationFeatures: async function() {
+  checkCorrelationFeatures: async function () {
     try {
       // Try to access a simple correlation endpoint
       await this.request('/cves/correlation-stats');
@@ -71,7 +71,7 @@ const api = {
   },
 
   // Enhanced method with optional correlation data
-  getCVE: async function(cveId, includeCorrelations = false) {
+  getCVE: async function (cveId, includeCorrelations = false) {
     try {
       const params = includeCorrelations ? '?include_correlations=true' : '';
       return await this.request(`/cves/${cveId}${params}`);
@@ -83,26 +83,21 @@ const api = {
     }
   },
 
-
-  getCVE: async function(cveId) {
-    return this.request(`/cves/${cveId}`);
-  },
-
-  collectCVEs: async function(daysBack = 7) {
+  collectCVEs: async function (daysBack = 7) {
     return this.request('/cves/enhance-collection', {
       method: 'POST',
       body: JSON.stringify({ days_back: daysBack }),
     });
   },
 
-  analyzeCVE: async function(cveId) {
+  analyzeCVE: async function (cveId) {
     return this.request(`/cves/${cveId}/analyze`, {
       method: 'POST',
     });
   },
 
   // Safe correlation endpoint
-  getAffectedServices: async function(cveId) {
+  getAffectedServices: async function (cveId) {
     try {
       return await this.request(`/cves/${cveId}/affected-services`);
     } catch (error) {
@@ -112,45 +107,45 @@ const api = {
   },
 
   // Safe correlation trigger
-  correlateCVE: async function(cveId, options = {}) {
+  correlateCVE: async function (cveId, options = {}) {
     try {
       const payload = {
         confidence_threshold: options.confidence_threshold || 0.7,
         include_low_confidence: options.include_low_confidence || false
       };
-      
+
       return await this.request(`/cves/${cveId}/correlate`, {
         method: 'POST',
         body: JSON.stringify(payload)
       });
     } catch (error) {
       console.warn(`Correlation not available for ${cveId}:`, error);
-      return { 
-        correlations_found: 0, 
+      return {
+        correlations_found: 0,
         message: 'Correlation feature not available',
-        error: error.message 
+        error: error.message
       };
     }
   },
 
   // Enhanced method with better error handling and fallbacks
-  getCorrelationStats: async function() {
+  getCorrelationStats: async function () {
     try {
       // Try the correlation stats endpoint
       return await this.request('/cves/correlation-stats');
     } catch (error) {
       console.warn('Correlation stats endpoint not available, calculating basic stats:', error);
-      
+
       try {
         // Fallback: get basic CVE stats and calculate what we can
         const cves = await this.request('/cves/?limit=1000'); // Get more CVEs for better stats
-        
+
         // Calculate basic statistics from available data
         const stats = this.calculateBasicStats(cves);
         return stats;
       } catch (fallbackError) {
         console.warn('CVE endpoint also failed, returning empty stats:', fallbackError);
-        
+
         // Return empty stats structure to prevent UI crashes
         return {
           total_cves: 0,
@@ -165,7 +160,7 @@ const api = {
   },
 
   // Helper method to calculate basic stats from CVE data
-  calculateBasicStats: function(cves) {
+  calculateBasicStats: function (cves) {
     if (!Array.isArray(cves) || cves.length === 0) {
       return {
         total_cves: 0,
@@ -178,24 +173,24 @@ const api = {
     }
 
     const total_cves = cves.length;
-    const correlated_cves = cves.filter(cve => 
+    const correlated_cves = cves.filter(cve =>
       cve.correlation_confidence && cve.correlation_confidence > 0
     ).length;
-    
+
     const correlation_coverage = total_cves > 0 ? (correlated_cves / total_cves * 100) : 0;
-    
+
     // Count confidence levels based on available data
-    const high_confidence = cves.filter(cve => 
+    const high_confidence = cves.filter(cve =>
       cve.correlation_confidence && cve.correlation_confidence >= 0.8
     ).length;
-    
-    const medium_confidence = cves.filter(cve => 
-      cve.correlation_confidence && 
-      cve.correlation_confidence >= 0.5 && 
+
+    const medium_confidence = cves.filter(cve =>
+      cve.correlation_confidence &&
+      cve.correlation_confidence >= 0.5 &&
       cve.correlation_confidence < 0.8
     ).length;
-    
-    const low_confidence = cves.filter(cve => 
+
+    const low_confidence = cves.filter(cve =>
       cve.correlation_confidence && cve.correlation_confidence < 0.5
     ).length;
 
@@ -219,7 +214,7 @@ const api = {
   },
 
   // Service endpoints
-  getServices: async function() {
+  getServices: async function () {
     try {
       return this.request('/services/instances');
     } catch (error) {
@@ -335,12 +330,11 @@ const ServiceImpactCard = ({ cveId, services = [] }) => {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <span className={`px-2 py-1 text-xs rounded ${
-                  service.criticality === 'critical' ? 'bg-red-100 text-red-800' :
+                <span className={`px-2 py-1 text-xs rounded ${service.criticality === 'critical' ? 'bg-red-100 text-red-800' :
                   service.criticality === 'high' ? 'bg-orange-100 text-orange-800' :
-                  service.criticality === 'medium' ? 'bg-yellow-100 text-yellow-800' :
-                  'bg-green-100 text-green-800'
-                }`}>
+                    service.criticality === 'medium' ? 'bg-yellow-100 text-yellow-800' :
+                      'bg-green-100 text-green-800'
+                  }`}>
                   {service.criticality}
                 </span>
               </div>
@@ -647,7 +641,7 @@ const CorrelationStats = () => {
       // First check if correlation features are available
       const available = await api.checkCorrelationFeatures();
       setCorrelationAvailable(available);
-      
+
       // Load stats regardless, but handle gracefully if not available
       const data = await api.getCorrelationStats();
       setStats(data);
@@ -679,7 +673,7 @@ const CorrelationStats = () => {
           <div>
             <h3 className="text-yellow-800 font-medium">Correlation Statistics Unavailable</h3>
             <p className="text-yellow-700 text-sm mt-1">
-              {error.includes('CVE not found') 
+              {error.includes('CVE not found')
                 ? 'No CVEs found in database. Try collecting CVEs first.'
                 : 'Correlation features may not be configured. Basic CVE management is still available.'}
             </p>
@@ -750,7 +744,7 @@ const CorrelationStats = () => {
             </div>
           </div>
         </div>
-        
+
         {stats.calculated && (
           <div className="col-span-full">
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
@@ -771,6 +765,8 @@ const CorrelationStats = () => {
 const CVEManagement = () => {
   const [cves, setCVEs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [severityFilter, setSeverityFilter] = useState('');
   const [selectedCVE, setSelectedCVE] = useState(null);
@@ -787,7 +783,7 @@ const CVEManagement = () => {
     try {
       const params = {};
       if (severityFilter) params.severity = severityFilter;
-      
+
       const data = await api.getCVEs(params);
       setCVEs(data);
     } catch (error) {
@@ -800,43 +796,127 @@ const CVEManagement = () => {
 
   const handleCollectCVEs = async () => {
     setCollecting(true);
+    setError('');
+    setMessage('');
+
     try {
-      await api.collectCVEs(7);
-      // Reload CVEs after collection
+      // Use the new enhanced collection endpoint
+      const response = await api.request('/cves/enhance-collection', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          days_back: 7,
+          use_files: true
+        })
+      });
+
+      setMessage('CVE collection started in background! Check back in a few minutes.');
+
+      // Refresh CVE list after a delay
       setTimeout(() => {
         loadCVEs();
-        setCollecting(false);
-      }, 3000);
+      }, 30000); // Refresh after 30 seconds
+
     } catch (error) {
       console.error('CVE collection failed:', error);
+      setError(`CVE collection failed: ${error.message}`);
+    } finally {
+      setCollecting(false);
+    }
+  };
+
+  const handleManualCollect = async () => {
+    setCollecting(true);
+    setError('');
+    setMessage('');
+
+    try {
+      const response = await api.request('/cves/manual-collect', {
+        method: 'POST',
+        // headers: {
+        //   'Content-Type': 'application/json'
+        // },
+        body: JSON.stringify({
+          days_back: 7,
+          use_files: true
+        })
+      });
+
+      if (response.success) {
+        setMessage(`CVE collection completed! ${response.message}`);
+        loadCVEs(); // Refresh immediately
+      } else {
+        setError('Manual CVE collection failed');
+      }
+    } catch (error) {
+      console.error('Manual CVE collection error:', error);
+      setError(`Manual collection failed: ${error.message}`);
+    } finally {
+      setCollecting(false);
+    }
+  };
+
+  const getCollectionStats = async () => {
+    try {
+      const response = await api.request('/cves/collection-stats', {
+        method: 'GET'
+      });
+      return response;
+    } catch (error) {
+      console.error('Failed to get collection stats:', error);
+      return null;
+    }
+  };
+
+  const testFileDownload = async () => {
+    setCollecting(true);
+    setError('');
+    setMessage('');
+
+    try {
+      const response = await api.request('/cves/test-file-download', {
+        method: 'GET'
+      });
+
+      if (response.success) {
+        setMessage(`File download test successful! Downloaded ${response.file_size_mb}MB for year ${response.year}`);
+      } else {
+        setError(`File download test failed: ${response.message}`);
+      }
+    } catch (error) {
+      console.error('File download test error:', error);
+      setError(`Download test failed: ${error.message}`);
+    } finally {
       setCollecting(false);
     }
   };
 
   const handleAnalyzeCVE = async (cveId) => {
     setAnalyzingCVEs(prev => new Set(prev).add(cveId));
-    
+
     try {
       const result = await api.analyzeCVE(cveId);
       console.log('Analysis result:', result);
-      
+
       // Update the CVE in the local state
-      setCVEs(prevCVEs => 
-        prevCVEs.map(cve => 
-          cve.cve_id === cveId 
-            ? { 
-                ...cve, 
-                ai_risk_score: result.analysis?.risk_score,
-                ai_summary: result.analysis?.summary,
-                mitigation_suggestions: JSON.stringify(result.analysis?.mitigations || []),
-                detection_methods: JSON.stringify(result.analysis?.detection_methods || []),
-                upgrade_paths: JSON.stringify(result.analysis?.upgrade_paths || []),
-                processed: true
-              }
+      setCVEs(prevCVEs =>
+        prevCVEs.map(cve =>
+          cve.cve_id === cveId
+            ? {
+              ...cve,
+              ai_risk_score: result.analysis?.risk_score,
+              ai_summary: result.analysis?.summary,
+              mitigation_suggestions: JSON.stringify(result.analysis?.mitigations || []),
+              detection_methods: JSON.stringify(result.analysis?.detection_methods || []),
+              upgrade_paths: JSON.stringify(result.analysis?.upgrade_paths || []),
+              processed: true
+            }
             : cve
         )
       );
-      
+
     } catch (error) {
       console.error('Failed to analyze CVE:', error);
     } finally {
@@ -861,7 +941,7 @@ const CVEManagement = () => {
 
   const filteredCVEs = cves.filter(cve => {
     const matchesSearch = cve.cve_id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         cve.description.toLowerCase().includes(searchTerm.toLowerCase());
+      cve.description.toLowerCase().includes(searchTerm.toLowerCase());
     return matchesSearch;
   });
 
@@ -873,8 +953,37 @@ const CVEManagement = () => {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="text-2xl font-bold">CVE Management</h2>
+        {message && (
+          <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
+            <div className="flex items-center">
+              <CheckCircle className="h-5 w-5 text-green-600 mr-2" />
+              <p className="text-green-800">{message}</p>
+              <button
+                onClick={() => setMessage('')}
+                className="ml-auto text-green-600 hover:text-green-800"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
+            <div className="flex items-center">
+              <XCircle className="h-5 w-5 text-red-600 mr-2" />
+              <p className="text-red-800">{error}</p>
+              <button
+                onClick={() => setError('')}
+                className="ml-auto text-red-600 hover:text-red-800"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        )}
         <div className="flex gap-3">
-          <button 
+          <button
             onClick={handleCollectCVEs}
             disabled={collecting}
             className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center gap-2 disabled:opacity-50"
@@ -882,12 +991,50 @@ const CVEManagement = () => {
             {collecting ? (
               <>
                 <Loader className="h-4 w-4 animate-spin" />
-                Collecting...
+                Processing...
               </>
             ) : (
               <>
                 <Plus className="h-4 w-4" />
-                Collect CVEs
+                Collect CVEs (Background)
+              </>
+            )}
+          </button>
+
+          {/* New manual collect button */}
+          <button
+            onClick={handleManualCollect}
+            disabled={collecting}
+            className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 flex items-center gap-2 disabled:opacity-50"
+          >
+            {collecting ? (
+              <>
+                <Loader className="h-4 w-4 animate-spin" />
+                Processing...
+              </>
+            ) : (
+              <>
+                <Database className="h-4 w-4" />
+                Manual Collect
+              </>
+            )}
+          </button>
+
+          {/* Test download button */}
+          <button
+            onClick={testFileDownload}
+            disabled={collecting}
+            className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 flex items-center gap-2 disabled:opacity-50"
+          >
+            {collecting ? (
+              <>
+                <Loader className="h-4 w-4 animate-spin" />
+                Testing...
+              </>
+            ) : (
+              <>
+                <Monitor className="h-4 w-4" />
+                Test Download
               </>
             )}
           </button>
@@ -910,7 +1057,7 @@ const CVEManagement = () => {
               className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
-          
+
           <select
             value={severityFilter}
             onChange={(e) => setSeverityFilter(e.target.value)}
@@ -1008,14 +1155,13 @@ const CVEManagement = () => {
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm">
                   <div className="flex items-center gap-2">
-                    <button 
+                    <button
                       onClick={() => handleAnalyzeCVE(cve.cve_id)}
                       disabled={analyzingCVEs.has(cve.cve_id)}
-                      className={`px-3 py-1 rounded text-sm font-medium ${
-                        analyzingCVEs.has(cve.cve_id)
-                          ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
-                          : 'text-purple-600 hover:text-purple-900 hover:bg-purple-50'
-                      }`}
+                      className={`px-3 py-1 rounded text-sm font-medium ${analyzingCVEs.has(cve.cve_id)
+                        ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                        : 'text-purple-600 hover:text-purple-900 hover:bg-purple-50'
+                        }`}
                     >
                       {analyzingCVEs.has(cve.cve_id) ? (
                         <div className="flex items-center gap-1">
@@ -1029,7 +1175,7 @@ const CVEManagement = () => {
                         </div>
                       )}
                     </button>
-                    <button 
+                    <button
                       onClick={() => handleCVEClick(cve)}
                       className="text-blue-600 hover:text-blue-900 hover:bg-blue-50 px-3 py-1 rounded text-sm"
                     >
@@ -1050,26 +1196,18 @@ const CVEManagement = () => {
             <Database className="h-12 w-12 text-gray-400 mx-auto mb-4" />
             <h3 className="text-lg font-medium text-gray-900 mb-2">No CVEs Found</h3>
             <p className="text-gray-500 mb-4">
-              {searchTerm || severityFilter 
-                ? 'No CVEs match your current filters.' 
+              {searchTerm || severityFilter
+                ? 'No CVEs match your current filters.'
                 : 'No CVEs have been collected yet.'}
             </p>
-            {!searchTerm && !severityFilter && (
-              <button 
-                onClick={handleCollectCVEs}
-                className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700"
-              >
-                Collect CVEs
-              </button>
-            )}
           </div>
         )}
       </div>
 
       {/* CVE Detail Modal */}
-      <CVEModal 
-        cve={selectedCVE} 
-        isOpen={isModalOpen} 
+      <CVEModal
+        cve={selectedCVE}
+        isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         onUpdate={loadCVEs}
       />
