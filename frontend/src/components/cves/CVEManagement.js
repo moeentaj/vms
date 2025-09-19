@@ -1,8 +1,62 @@
-// Updated CVEManagement.js with real-time table updates and proper modal refresh
-
-import React, { useState, useEffect } from 'react';
-import { Plus, Info, Search, Loader, X, AlertTriangle, Shield, Calendar, ExternalLink, Target, Server, CheckCircle, XCircle, Clock, Database, Monitor } from 'lucide-react';
+// Enhanced CVEManagement.js with fixed state management and real-time updates
+import React, { useState, useEffect, useCallback } from 'react';
+import { Plus, Info, Search, Loader, X, AlertTriangle, Shield, Calendar, ExternalLink, Target, Server, CheckCircle, XCircle, Clock, Database, Monitor, RefreshCw } from 'lucide-react';
 import { api } from '../../services/api';
+
+// Enhanced Error Boundary Component
+const ErrorBoundary = ({ children, fallback }) => {
+  const [hasError, setHasError] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    const handleError = (error) => {
+      setHasError(true);
+      setError(error);
+    };
+
+    window.addEventListener('error', handleError);
+    return () => window.removeEventListener('error', handleError);
+  }, []);
+
+  if (hasError) {
+    return fallback || (
+      <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+        <div className="flex items-center">
+          <AlertTriangle className="h-5 w-5 text-red-600 mr-2" />
+          <span className="text-red-800">Something went wrong. Please refresh the page.</span>
+        </div>
+      </div>
+    );
+  }
+
+  return children;
+};
+
+// Enhanced Toast Notification System
+const Toast = ({ message, type = 'info', onClose }) => {
+  useEffect(() => {
+    const timer = setTimeout(onClose, 5000);
+    return () => clearTimeout(timer);
+  }, [onClose]);
+
+  const typeStyles = {
+    success: 'bg-green-100 border-green-400 text-green-700',
+    error: 'bg-red-100 border-red-400 text-red-700',
+    warning: 'bg-yellow-100 border-yellow-400 text-yellow-700',
+    info: 'bg-blue-100 border-blue-400 text-blue-700'
+  };
+
+  return (
+    <div className={`fixed top-4 right-4 border-l-4 p-4 rounded shadow-lg z-50 ${typeStyles[type]}`}>
+      <div className="flex items-center">
+        <span className="flex-1">{message}</span>
+        <button onClick={onClose} className="ml-2 text-gray-500 hover:text-gray-700">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+};
 
 // Severity color mappings
 const SEVERITY_COLORS = {
@@ -13,47 +67,47 @@ const SEVERITY_COLORS = {
   UNKNOWN: 'bg-gray-100 text-gray-800 border-gray-200'
 };
 
-// Enhanced CVE Modal Component
-const CVEModal = ({ cve, isOpen, onClose, onUpdate, onAnalysisComplete }) => {
+// Enhanced CVE Modal Component with proper state management
+const CVEModal = ({ cve, isOpen, onClose, onUpdate }) => {
   const [analyzing, setAnalyzing] = useState(false);
   const [currentCVE, setCurrentCVE] = useState(cve);
   const [refreshing, setRefreshing] = useState(false);
+  const [toast, setToast] = useState(null);
 
   // Update current CVE when prop changes
   useEffect(() => {
-    setCurrentCVE(cve);
-    if (cve) {
-      console.log('Modal received CVE data:', cve);
-      console.log('CVE analysis fields:', {
-        ai_risk_score: cve.ai_risk_score,
-        ai_summary: cve.ai_summary,
-        processed: cve.processed,
-        mitigation_suggestions: cve.mitigation_suggestions,
-        detection_methods: cve.detection_methods,
-        upgrade_paths: cve.upgrade_paths
-      });
+    if (cve && cve.cve_id !== currentCVE?.cve_id) {
+      setCurrentCVE(cve);
+      console.log('Modal received new CVE data:', cve);
     }
-  }, [cve]);
+  }, [cve, currentCVE?.cve_id]);
 
   // Refresh CVE data from server
-  const refreshCVEData = async () => {
+  const refreshCVEData = useCallback(async () => {
     if (!currentCVE?.cve_id) return;
     
     setRefreshing(true);
     try {
       const response = await api.getCVE(currentCVE.cve_id);
-      
-      // Handle the nested response structure
       const updatedCVE = response.cve || response;
       setCurrentCVE(updatedCVE);
-      console.log('CVE data refreshed:', updatedCVE);
-      console.log('API response structure:', response);
+      
+      // Notify parent component about the update
+      if (onUpdate) {
+        onUpdate(updatedCVE);
+      }
+      
+      console.log('CVE data refreshed successfully');
     } catch (error) {
       console.error('Failed to refresh CVE data:', error);
+      setToast({ 
+        message: `Failed to refresh CVE data: ${error.message}`, 
+        type: 'error' 
+      });
     } finally {
       setRefreshing(false);
     }
-  };
+  }, [currentCVE?.cve_id, onUpdate]);
 
   const handleAnalyze = async () => {
     if (!currentCVE?.cve_id) return;
@@ -64,33 +118,41 @@ const CVEModal = ({ cve, isOpen, onClose, onUpdate, onAnalysisComplete }) => {
       const result = await api.analyzeCVE(currentCVE.cve_id);
       console.log('Analysis result received:', result);
 
-      // Update current CVE with analysis results
+      // Create updated CVE object with proper field mapping
       const updatedCVE = {
         ...currentCVE,
-        ai_risk_score: result.ai_analysis?.risk_score || result.risk_assessment?.base_risk_score,
-        ai_summary: result.ai_analysis?.summary,
-        mitigation_suggestions: JSON.stringify(result.ai_analysis?.mitigations || []),
-        detection_methods: JSON.stringify(result.ai_analysis?.detection_methods || []),
-        upgrade_paths: JSON.stringify(result.ai_analysis?.upgrade_paths || []),
+        ai_risk_score: result.ai_analysis?.risk_score || result.risk_assessment?.base_risk_score || currentCVE.ai_risk_score,
+        ai_summary: result.ai_analysis?.summary || currentCVE.ai_summary,
+        mitigation_suggestions: result.ai_analysis?.mitigations ? 
+          JSON.stringify(result.ai_analysis.mitigations) : currentCVE.mitigation_suggestions,
+        detection_methods: result.ai_analysis?.detection_methods ? 
+          JSON.stringify(result.ai_analysis.detection_methods) : currentCVE.detection_methods,
+        upgrade_paths: result.ai_analysis?.upgrade_paths ? 
+          JSON.stringify(result.ai_analysis.upgrade_paths) : currentCVE.upgrade_paths,
+        correlation_confidence: result.asset_correlation?.correlation_confidence || currentCVE.correlation_confidence,
+        potentially_affected_assets: result.asset_correlation?.total_potentially_affected || currentCVE.potentially_affected_assets,
         processed: true,
-        correlation_confidence: result.asset_correlation?.correlation_confidence,
         last_analyzed: new Date().toISOString()
       };
 
       setCurrentCVE(updatedCVE);
       
-      // Notify parent components about the analysis completion
-      if (onAnalysisComplete) {
-        onAnalysisComplete(currentCVE.cve_id, updatedCVE);
-      }
-      
+      // Notify parent component about the analysis completion
       if (onUpdate) {
-        onUpdate();
+        onUpdate(updatedCVE);
       }
+
+      setToast({ 
+        message: 'CVE analysis completed successfully!', 
+        type: 'success' 
+      });
 
     } catch (error) {
       console.error('Analysis failed:', error);
-      alert(`Analysis failed: ${error.message}`);
+      setToast({ 
+        message: `Analysis failed: ${error.message}`, 
+        type: 'error' 
+      });
     } finally {
       setAnalyzing(false);
     }
@@ -125,124 +187,104 @@ const CVEModal = ({ cve, isOpen, onClose, onUpdate, onAnalysisComplete }) => {
   const parseJsonField = (field) => {
     if (!field) return [];
     try {
-      // Handle double-encoded JSON strings like "\"[\\\"item1\\\", \\\"item2\\\"]\""
       let parsed = field;
       
-      // If it's a string, try to parse it
       if (typeof field === 'string') {
-        // First, try to parse as JSON
         parsed = JSON.parse(field);
-        
-        // If the result is still a string (double-encoded), parse again
         if (typeof parsed === 'string') {
           parsed = JSON.parse(parsed);
         }
       }
       
-      // Ensure it's an array
       return Array.isArray(parsed) ? parsed : [parsed];
     } catch (error) {
-      console.error('Failed to parse JSON field:', field, error);
-      // If parsing fails, try to extract as plain string
-      if (typeof field === 'string' && field !== '[]' && field !== '{}') {
-        return [field];
-      }
-      return [];
+      console.warn('Failed to parse JSON field:', error);
+      return typeof field === 'string' ? [field] : [];
     }
   };
 
-  const isAnalyzed = currentCVE.processed || currentCVE.ai_risk_score || currentCVE.ai_summary;
+  const isAnalyzed = currentCVE.ai_summary || currentCVE.processed;
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-lg max-w-6xl w-full max-h-[90vh] overflow-y-auto">
-        {/* Header */}
-        <div className="flex justify-between items-center p-6 border-b">
-          <div className="flex items-center gap-3">
-            {getSeverityIcon(currentCVE.severity)}
-            <h2 className="text-2xl font-bold text-gray-900">{currentCVE.cve_id}</h2>
-            <span className={`inline-flex px-3 py-1 text-sm font-semibold rounded-full border ${SEVERITY_COLORS[currentCVE.severity] || SEVERITY_COLORS.UNKNOWN}`}>
-              {currentCVE.severity || 'UNKNOWN'}
-            </span>
-            {isAnalyzed && (
-              <span className="inline-flex items-center gap-1 px-2 py-1 text-sm bg-green-100 text-green-800 rounded-full">
-                <CheckCircle className="h-3 w-3" />
-                Analyzed
-              </span>
-            )}
-            {currentCVE.ai_risk_score && (
-              <span className="inline-flex items-center gap-1 px-2 py-1 text-sm bg-purple-100 text-purple-800 rounded-full">
-                <Database className="h-3 w-3" />
-                AI Risk: {currentCVE.ai_risk_score.toFixed(1)}
-              </span>
-            )}
+    <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50 p-4">
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onClose={() => setToast(null)}
+        />
+      )}
+      
+      <div className="bg-white rounded-lg max-w-4xl w-full max-h-[90vh] overflow-hidden">
+        {/* Modal Header */}
+        <div className="px-6 py-4 border-b bg-gray-50 flex justify-between items-center">
+          <div>
+            <h2 className="text-xl font-semibold text-gray-900">CVE Details</h2>
+            <p className="text-sm text-gray-600">Comprehensive vulnerability information</p>
           </div>
           <div className="flex items-center gap-2">
             <button
               onClick={refreshCVEData}
               disabled={refreshing}
-              className="p-2 text-gray-400 hover:text-gray-600 transition-colors disabled:opacity-50"
+              className="p-2 text-gray-400 hover:text-gray-600 disabled:opacity-50"
               title="Refresh CVE data"
             >
-              <Monitor className={`h-5 w-5 ${refreshing ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`h-5 w-5 ${refreshing ? 'animate-spin' : ''}`} />
             </button>
             <button
               onClick={onClose}
-              className="text-gray-400 hover:text-gray-600 transition-colors"
+              className="p-2 text-gray-400 hover:text-gray-600"
             >
-              <X className="h-6 w-6" />
+              <X className="h-5 w-5" />
             </button>
           </div>
         </div>
 
-        <div className="flex">
-          {/* Left side - CVE Details */}
-          <div className="flex-1 p-6 space-y-6">
-            {/* Basic Information */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="bg-gray-50 p-4 rounded-lg">
-                <h3 className="text-sm font-medium text-gray-500 mb-1">CVSS Score</h3>
-                <p className="text-2xl font-bold text-gray-900">{currentCVE.cvss_score || 'N/A'}</p>
-              </div>
-              <div className="bg-gray-50 p-4 rounded-lg">
-                <h3 className="text-sm font-medium text-gray-500 mb-1">AI Risk Score</h3>
-                <p className="text-2xl font-bold text-orange-600">
-                  {currentCVE.ai_risk_score ? currentCVE.ai_risk_score.toFixed(1) : 'Not analyzed'}
-                </p>
-              </div>
-              <div className="bg-gray-50 p-4 rounded-lg">
-                <h3 className="text-sm font-medium text-gray-500 mb-1">Published</h3>
-                <p className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-                  <Calendar className="h-4 w-4" />
-                  {formatDate(currentCVE.published_date)}
-                </p>
-              </div>
-            </div>
-
-            {/* Analysis Status and Actions */}
-            <div className="bg-blue-50 border border-blue-200 p-4 rounded-lg">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className={`flex items-center gap-2 ${isAnalyzed ? 'text-green-600' : 'text-gray-500'}`}>
-                    {isAnalyzed ? (
-                      <>
-                        <CheckCircle className="h-5 w-5" />
-                        <span className="font-medium">Analysis Complete</span>
-                      </>
-                    ) : (
-                      <>
-                        <Clock className="h-5 w-5" />
-                        <span className="font-medium">Not Analyzed</span>
-                      </>
-                    )}
+        <div className="overflow-y-auto max-h-[calc(90vh-140px)]">
+          <div className="p-6 space-y-6">
+            {/* CVE Header */}
+            <div className="flex justify-between items-start">
+              <div>
+                <h3 className="text-2xl font-bold text-gray-900">{currentCVE.cve_id}</h3>
+                <div className="flex items-center gap-4 mt-2">
+                  <div className="flex items-center gap-2">
+                    {getSeverityIcon(currentCVE.severity)}
+                    <span className={`px-2 py-1 text-xs font-semibold rounded-full ${SEVERITY_COLORS[currentCVE.severity] || SEVERITY_COLORS.UNKNOWN}`}>
+                      {currentCVE.severity || 'UNKNOWN'}
+                    </span>
                   </div>
-                  {currentCVE.correlation_confidence && (
-                    <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded-full">
-                      <Target className="h-3 w-3" />
-                      {(currentCVE.correlation_confidence * 100).toFixed(0)}% confidence
+                  {currentCVE.cvss_score && (
+                    <span className="text-sm text-gray-600">
+                      CVSS: <span className="font-semibold">{currentCVE.cvss_score}</span>
                     </span>
                   )}
+                  <span className="text-sm text-gray-600">
+                    Published: {formatDate(currentCVE.published_date)}
+                  </span>
                 </div>
+              </div>
+
+              {/* Analysis Section */}
+              <div className="flex flex-col items-end gap-3">
+                <div className={`flex items-center gap-2 ${isAnalyzed ? 'text-green-600' : 'text-gray-500'}`}>
+                  {isAnalyzed ? (
+                    <>
+                      <CheckCircle className="h-5 w-5" />
+                      <span className="font-medium">Analysis Complete</span>
+                    </>
+                  ) : (
+                    <>
+                      <Clock className="h-5 w-5" />
+                      <span className="font-medium">Not Analyzed</span>
+                    </>
+                  )}
+                </div>
+                {currentCVE.correlation_confidence && (
+                  <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded-full">
+                    <Target className="h-3 w-3" />
+                    {(currentCVE.correlation_confidence * 100).toFixed(0)}% confidence
+                  </span>
+                )}
                 <button
                   onClick={handleAnalyze}
                   disabled={analyzing}
@@ -341,29 +383,11 @@ const CVEModal = ({ cve, isOpen, onClose, onUpdate, onAnalysisComplete }) => {
                             {paths.map((path, index) => (
                               <div key={index}>
                                 {typeof path === 'object' && path.patching_steps ? (
-                                  // Handle structured upgrade path objects
                                   <div>
-                                    {path.version_requirements && (
-                                      <div className="mb-2">
-                                        <strong>Version Requirements:</strong> {path.version_requirements}
-                                      </div>
-                                    )}
-                                    {path.patching_steps && (
-                                      <div>
-                                        <strong>Patching Steps:</strong>
-                                        <ul className="list-disc list-inside mt-1 space-y-1">
-                                          {Array.isArray(path.patching_steps) ? 
-                                            path.patching_steps.map((step, stepIndex) => (
-                                              <li key={stepIndex}>{step}</li>
-                                            )) :
-                                            <li>{path.patching_steps}</li>
-                                          }
-                                        </ul>
-                                      </div>
-                                    )}
+                                    <div className="font-medium">{path.product || `Upgrade Path ${index + 1}`}</div>
+                                    <div className="text-sm mt-1">{path.patching_steps}</div>
                                   </div>
                                 ) : (
-                                  // Handle simple string upgrade paths
                                   <div>{typeof path === 'string' ? path : JSON.stringify(path)}</div>
                                 )}
                               </div>
@@ -377,6 +401,28 @@ const CVEModal = ({ cve, isOpen, onClose, onUpdate, onAnalysisComplete }) => {
                 </div>
               </div>
             )}
+
+            {/* Asset Correlation */}
+            {currentCVE.potentially_affected_assets && currentCVE.potentially_affected_assets > 0 && (
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900 mb-3">Asset Impact</h3>
+                <div className="bg-orange-50 border border-orange-200 p-4 rounded-lg">
+                  <div className="text-orange-800">
+                    <div className="flex items-center gap-2">
+                      <Server className="h-5 w-5" />
+                      <span className="font-medium">
+                        {currentCVE.potentially_affected_assets} potentially affected assets
+                      </span>
+                    </div>
+                    {currentCVE.correlation_confidence && (
+                      <div className="text-sm mt-1">
+                        Correlation confidence: {(currentCVE.correlation_confidence * 100).toFixed(1)}%
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -384,18 +430,27 @@ const CVEModal = ({ cve, isOpen, onClose, onUpdate, onAnalysisComplete }) => {
   );
 };
 
-// Main CVE Management Component
+// Main CVE Management Component with enhanced state management
 const CVEManagement = () => {
   const [cves, setCVEs] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [message, setMessage] = useState('');
-  const [error, setError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [severityFilter, setSeverityFilter] = useState('');
   const [selectedCVE, setSelectedCVE] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [collecting, setCollecting] = useState(false);
   const [analyzingCVEs, setAnalyzingCVEs] = useState(new Set());
+  const [toasts, setToasts] = useState([]);
+
+  // Toast management
+  const addToast = (message, type = 'info') => {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, message, type }]);
+  };
+
+  const removeToast = (id) => {
+    setToasts(prev => prev.filter(toast => toast.id !== id));
+  };
 
   useEffect(() => {
     loadCVEs();
@@ -413,13 +468,13 @@ const CVEManagement = () => {
     } catch (error) {
       console.error('Failed to load CVEs:', error);
       setCVEs([]);
-      setError('Failed to load CVEs');
+      addToast(`Failed to load CVEs: ${error.message}`, 'error');
     } finally {
       setLoading(false);
     }
   };
 
-  // Enhanced handleAnalyzeCVE with real-time table updates
+  // Enhanced CVE analysis with proper state management
   const handleAnalyzeCVE = async (cveId) => {
     console.log('Starting analysis for CVE:', cveId);
     setAnalyzingCVEs(prev => new Set(prev).add(cveId));
@@ -434,13 +489,16 @@ const CVEManagement = () => {
           cve.cve_id === cveId
             ? {
                 ...cve,
-                // Map from the new API response structure
-                ai_risk_score: result.ai_analysis?.risk_score || result.risk_assessment?.base_risk_score,
-                ai_summary: result.ai_analysis?.summary,
-                mitigation_suggestions: JSON.stringify(result.ai_analysis?.mitigations || []),
-                detection_methods: JSON.stringify(result.ai_analysis?.detection_methods || []),
-                upgrade_paths: JSON.stringify(result.ai_analysis?.upgrade_paths || []),
-                correlation_confidence: result.asset_correlation?.correlation_confidence,
+                ai_risk_score: result.ai_analysis?.risk_score || result.risk_assessment?.base_risk_score || cve.ai_risk_score,
+                ai_summary: result.ai_analysis?.summary || cve.ai_summary,
+                mitigation_suggestions: result.ai_analysis?.mitigations ? 
+                  JSON.stringify(result.ai_analysis.mitigations) : cve.mitigation_suggestions,
+                detection_methods: result.ai_analysis?.detection_methods ? 
+                  JSON.stringify(result.ai_analysis.detection_methods) : cve.detection_methods,
+                upgrade_paths: result.ai_analysis?.upgrade_paths ? 
+                  JSON.stringify(result.ai_analysis.upgrade_paths) : cve.upgrade_paths,
+                correlation_confidence: result.asset_correlation?.correlation_confidence || cve.correlation_confidence,
+                potentially_affected_assets: result.asset_correlation?.total_potentially_affected || cve.potentially_affected_assets,
                 processed: true,
                 last_analyzed: new Date().toISOString()
               }
@@ -448,11 +506,31 @@ const CVEManagement = () => {
         )
       );
 
+      // Update selected CVE if it's the one being analyzed
+      if (selectedCVE && selectedCVE.cve_id === cveId) {
+        setSelectedCVE(prev => ({
+          ...prev,
+          ai_risk_score: result.ai_analysis?.risk_score || result.risk_assessment?.base_risk_score || prev.ai_risk_score,
+          ai_summary: result.ai_analysis?.summary || prev.ai_summary,
+          mitigation_suggestions: result.ai_analysis?.mitigations ? 
+            JSON.stringify(result.ai_analysis.mitigations) : prev.mitigation_suggestions,
+          detection_methods: result.ai_analysis?.detection_methods ? 
+            JSON.stringify(result.ai_analysis.detection_methods) : prev.detection_methods,
+          upgrade_paths: result.ai_analysis?.upgrade_paths ? 
+            JSON.stringify(result.ai_analysis.upgrade_paths) : prev.upgrade_paths,
+          correlation_confidence: result.asset_correlation?.correlation_confidence || prev.correlation_confidence,
+          potentially_affected_assets: result.asset_correlation?.total_potentially_affected || prev.potentially_affected_assets,
+          processed: true,
+          last_analyzed: new Date().toISOString()
+        }));
+      }
+
+      addToast(`CVE ${cveId} analysis completed successfully!`, 'success');
       console.log('CVE table updated for:', cveId);
 
     } catch (error) {
       console.error('Failed to analyze CVE:', error);
-      setError(`Analysis failed for ${cveId}: ${error.message}`);
+      addToast(`Analysis failed for ${cveId}: ${error.message}`, 'error');
     } finally {
       setAnalyzingCVEs(prev => {
         const newSet = new Set(prev);
@@ -462,14 +540,14 @@ const CVEManagement = () => {
     }
   };
 
-  // Handle analysis completion from modal
-  const handleAnalysisComplete = (cveId, updatedCVE) => {
-    console.log('Analysis completed in modal for:', cveId);
+  // Handle CVE updates from modal
+  const handleCVEUpdate = (updatedCVE) => {
     setCVEs(prevCVEs =>
       prevCVEs.map(cve =>
-        cve.cve_id === cveId ? { ...cve, ...updatedCVE } : cve
+        cve.cve_id === updatedCVE.cve_id ? { ...cve, ...updatedCVE } : cve
       )
     );
+    setSelectedCVE(updatedCVE);
   };
 
   const handleCVEClick = async (cve) => {
@@ -479,35 +557,30 @@ const CVEManagement = () => {
       const response = await api.getCVE(cve.cve_id);
       
       // Handle the nested response structure
-      const fullCVE = response.cve || response; // Extract CVE from nested structure if present
+      const fullCVE = response.cve || response;
       setSelectedCVE(fullCVE);
       console.log('Fresh CVE data loaded:', fullCVE);
-      console.log('API response structure:', response);
     } catch (error) {
       console.error('Failed to fetch CVE details:', error);
       setSelectedCVE(cve); // Fallback to existing data
+      addToast(`Failed to fetch CVE details: ${error.message}`, 'warning');
     }
     setIsModalOpen(true);
   };
 
   const handleCollectCVEs = async () => {
     setCollecting(true);
-    setError('');
-    setMessage('');
 
     try {
-      const response = await api.request('/cves/enhance-collection', {
+      const response = await api.request('/cves/collect', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
         body: JSON.stringify({
           days_back: 7,
           use_files: true
         })
       });
 
-      setMessage('CVE collection started in background! Check back in a few minutes.');
+      addToast('CVE collection started in background! Check back in a few minutes.', 'success');
       
       // Refresh CVE list after a delay
       setTimeout(() => {
@@ -516,26 +589,11 @@ const CVEManagement = () => {
 
     } catch (error) {
       console.error('CVE collection failed:', error);
-      setError(`CVE collection failed: ${error.message}`);
+      addToast(`CVE collection failed: ${error.message}`, 'error');
     } finally {
       setCollecting(false);
     }
   };
-
-  // Clear messages after some time
-  useEffect(() => {
-    if (message) {
-      const timer = setTimeout(() => setMessage(''), 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [message]);
-
-  useEffect(() => {
-    if (error) {
-      const timer = setTimeout(() => setError(''), 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [error]);
 
   // Filter CVEs based on search term
   const filteredCVEs = cves.filter(cve => {
@@ -556,64 +614,60 @@ const CVEManagement = () => {
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">CVE Management</h1>
-          <p className="text-gray-600">Manage and analyze Common Vulnerabilities and Exposures</p>
-        </div>
-        <button
-          onClick={handleCollectCVEs}
-          disabled={collecting}
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-        >
-          {collecting ? (
-            <>
-              <Loader className="h-4 w-4 animate-spin" />
-              Collecting...
-            </>
-          ) : (
-            <>
-              <Plus className="h-4 w-4" />
-              Collect CVEs
-            </>
-          )}
-        </button>
-      </div>
+    <ErrorBoundary>
+      <div className="space-y-6">
+        {/* Toast Notifications */}
+        {toasts.map(toast => (
+          <Toast
+            key={toast.id}
+            message={toast.message}
+            type={toast.type}
+            onClose={() => removeToast(toast.id)}
+          />
+        ))}
 
-      {/* Messages */}
-      {message && (
-        <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded">
-          {message}
-        </div>
-      )}
-      
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
-          {error}
-        </div>
-      )}
-
-      {/* Filters */}
-      <div className="bg-white p-4 rounded-lg shadow space-y-4">
-        <div className="flex gap-4">
-          <div className="flex-1">
-            <div className="relative">
-              <Search className="h-5 w-5 absolute left-3 top-3 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Search CVEs by ID or description..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              />
-            </div>
+        {/* Header */}
+        <div className="flex justify-between items-center">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">CVE Management</h1>
+            <p className="text-gray-600">Manage and analyze Common Vulnerabilities and Exposures</p>
           </div>
+          <button
+            onClick={handleCollectCVEs}
+            disabled={collecting}
+            className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+          >
+            {collecting ? (
+              <>
+                <Loader className="h-4 w-4 animate-spin" />
+                Collecting...
+              </>
+            ) : (
+              <>
+                <Plus className="h-4 w-4" />
+                Collect CVEs
+              </>
+            )}
+          </button>
+        </div>
+
+        {/* Filters */}
+        <div className="bg-white p-4 rounded-lg shadow flex gap-4 flex-wrap items-center">
+          <div className="flex-1 max-w-md relative">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
+            <input
+              type="text"
+              placeholder="Search CVEs..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+          </div>
+          
           <select
             value={severityFilter}
             onChange={(e) => setSeverityFilter(e.target.value)}
-            className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
           >
             <option value="">All Severities</option>
             <option value="CRITICAL">Critical</option>
@@ -622,161 +676,137 @@ const CVEManagement = () => {
             <option value="LOW">Low</option>
           </select>
         </div>
-        
-        <div className="flex items-center justify-between text-sm text-gray-600">
-          <div className="flex items-center gap-4">
-            <span>Total CVEs: {cves.length}</span>
-            <span>Filtered: {filteredCVEs.length}</span>
-            <span>Analyzed: {cves.filter(cve => cve.ai_risk_score || cve.processed).length}</span>
-          </div>
-        </div>
-      </div>
 
-      {/* CVE List */}
-      <div className="bg-white rounded-lg shadow overflow-hidden">
-        <table className="w-full">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">CVE ID</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">CVSS Score</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Severity</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">AI Risk Score</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-200">
-            {filteredCVEs.map((cve) => (
-              <tr key={cve.id} className="hover:bg-gray-50">
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                  <button
-                    onClick={() => handleCVEClick(cve)}
-                    className="text-blue-600 hover:text-blue-800 hover:underline"
-                  >
-                    {cve.cve_id}
-                  </button>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm">
-                  <span className="font-medium">
-                    {cve.cvss_score || 'N/A'}
-                  </span>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm">
-                  <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full border ${SEVERITY_COLORS[cve.severity] || SEVERITY_COLORS.UNKNOWN}`}>
-                    {cve.severity || 'UNKNOWN'}
-                  </span>
-                </td>
-                <td className="px-6 py-4 text-sm text-gray-900 max-w-md">
-                  <div className="truncate" title={cve.description}>
-                    {cve.description.substring(0, 100)}...
-                  </div>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm">
-                  {cve.ai_risk_score ? (
-                    <div className="flex items-center gap-1">
-                      <Database className="h-4 w-4 text-purple-600" />
-                      <span className="text-purple-600 font-semibold">
-                        {cve.ai_risk_score.toFixed(1)}
-                      </span>
-                    </div>
-                  ) : (
-                    <span className="text-gray-400">Not analyzed</span>
-                  )}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm">
-                  <div className="flex items-center gap-2">
-                    {cve.processed || cve.ai_risk_score ? (
-                      <div className="flex items-center gap-1 text-green-600">
-                        <CheckCircle className="h-4 w-4" />
-                        <span className="text-xs">Processed</span>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-1 text-gray-500">
-                        <Clock className="h-4 w-4" />
-                        <span className="text-xs">Pending</span>
-                      </div>
-                    )}
-                    {cve.correlation_confidence && (
-                      <div className="flex items-center gap-1 text-blue-600">
-                        <Target className="h-3 w-3" />
-                        <span className="text-xs">
-                          {(cve.correlation_confidence * 100).toFixed(0)}%
+        {/* CVE Table */}
+        <div className="bg-white rounded-lg shadow overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">CVE ID</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Severity</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">CVSS Score</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">AI Score</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Published</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Analysis Status</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {filteredCVEs.map((cve) => {
+                  const isAnalyzing = analyzingCVEs.has(cve.cve_id);
+                  const isAnalyzed = cve.ai_summary || cve.processed;
+                  
+                  return (
+                    <tr key={cve.cve_id} className="hover:bg-gray-50 cursor-pointer" onClick={() => handleCVEClick(cve)}>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="text-sm font-medium text-blue-600 hover:text-blue-800">
+                          {cve.cve_id}
+                        </div>
+                        <div className="text-sm text-gray-500 truncate max-w-xs">
+                          {cve.description?.substring(0, 60)}...
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${SEVERITY_COLORS[cve.severity] || SEVERITY_COLORS.UNKNOWN}`}>
+                          {cve.severity || 'UNKNOWN'}
                         </span>
-                      </div>
-                    )}
-                  </div>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm">
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => handleAnalyzeCVE(cve.cve_id)}
-                      disabled={analyzingCVEs.has(cve.cve_id)}
-                      className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-                        analyzingCVEs.has(cve.cve_id)
-                          ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
-                          : 'text-purple-600 hover:text-purple-900 hover:bg-purple-50'
-                      }`}
-                    >
-                      {analyzingCVEs.has(cve.cve_id) ? (
-                        <div className="flex items-center gap-1">
-                          <Loader className="h-3 w-3 animate-spin" />
-                          Analyzing...
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {cve.cvss_score ? (
+                          <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                            cve.cvss_score >= 9 ? 'bg-red-100 text-red-800' :
+                            cve.cvss_score >= 7 ? 'bg-orange-100 text-orange-800' :
+                            cve.cvss_score >= 4 ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-green-100 text-green-800'
+                          }`}>
+                            {cve.cvss_score}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">N/A</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {cve.ai_risk_score ? (
+                          <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                            cve.ai_risk_score >= 8 ? 'bg-purple-100 text-purple-800' :
+                            cve.ai_risk_score >= 6 ? 'bg-indigo-100 text-indigo-800' :
+                            cve.ai_risk_score >= 4 ? 'bg-blue-100 text-blue-800' :
+                            'bg-gray-100 text-gray-800'
+                          }`}>
+                            {Number(cve.ai_risk_score).toFixed(1)}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {cve.published_date ? new Date(cve.published_date).toLocaleDateString() : 'N/A'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex items-center gap-2">
+                          {isAnalyzing ? (
+                            <div className="flex items-center gap-1 text-blue-600">
+                              <Loader className="h-4 w-4 animate-spin" />
+                              <span className="text-xs">Analyzing...</span>
+                            </div>
+                          ) : isAnalyzed ? (
+                            <div className="flex items-center gap-1 text-green-600">
+                              <CheckCircle className="h-4 w-4" />
+                              <span className="text-xs">Analyzed</span>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1 text-gray-500">
+                              <Clock className="h-4 w-4" />
+                              <span className="text-xs">Pending</span>
+                            </div>
+                          )}
                         </div>
-                      ) : (
-                        <div className="flex items-center gap-1">
-                          <Database className="h-3 w-3" />
-                          {cve.ai_risk_score ? 'Re-analyze' : 'Analyze'}
-                        </div>
-                      )}
-                    </button>
-                    <button
-                      onClick={() => handleCVEClick(cve)}
-                      className="text-blue-600 hover:text-blue-900 hover:bg-blue-50 px-3 py-1 rounded text-sm transition-colors"
-                    >
-                      View
-                    </button>
-                    <button className="text-green-600 hover:text-green-900 hover:bg-green-50 px-3 py-1 rounded text-sm transition-colors">
-                      Assign
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-
-        {filteredCVEs.length === 0 && (
-          <div className="text-center py-12">
-            <Database className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-gray-900 mb-2">No CVEs Found</h3>
-            <p className="text-gray-500 mb-4">
-              {searchTerm || severityFilter
-                ? 'No CVEs match your current filters.'
-                : 'No CVEs have been collected yet.'}
-            </p>
-            {!searchTerm && !severityFilter && (
-              <button
-                onClick={handleCollectCVEs}
-                disabled={collecting}
-                className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50"
-              >
-                {collecting ? 'Collecting...' : 'Collect CVEs'}
-              </button>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleAnalyzeCVE(cve.cve_id);
+                          }}
+                          disabled={isAnalyzing}
+                          className="text-purple-600 hover:text-purple-900 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {isAnalyzing ? 'Analyzing...' : isAnalyzed ? 'Re-analyze' : 'Analyze'}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            
+            {filteredCVEs.length === 0 && (
+              <div className="text-center py-8 text-gray-500">
+                <div className="flex flex-col items-center">
+                  <Search className="h-12 w-12 text-gray-300 mb-4" />
+                  <p className="text-lg font-medium">No CVEs found</p>
+                  <p className="text-sm">Try adjusting your search criteria or collect new CVEs</p>
+                </div>
+              </div>
             )}
           </div>
+        </div>
+
+        {/* CVE Modal */}
+        {isModalOpen && selectedCVE && (
+          <CVEModal
+            cve={selectedCVE}
+            isOpen={isModalOpen}
+            onClose={() => {
+              setIsModalOpen(false);
+              setSelectedCVE(null);
+            }}
+            onUpdate={handleCVEUpdate}
+          />
         )}
       </div>
-
-      {/* CVE Detail Modal */}
-      <CVEModal
-        cve={selectedCVE}
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        onUpdate={loadCVEs}
-        onAnalysisComplete={handleAnalysisComplete}
-      />
-    </div>
+    </ErrorBoundary>
   );
 };
 
