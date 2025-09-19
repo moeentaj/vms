@@ -662,3 +662,399 @@ async def legacy_test_download(
     """Legacy endpoint - redirects to test collection"""
     logger.info("Legacy test-file-download endpoint called - redirecting to /test-collection")
     return await test_cve_collection(1, True, current_user, db)
+
+@router.post("/{cve_id}/analyze")
+async def analyze_cve(
+    cve_id: str,
+    include_asset_correlation: bool = Query(True, description="Include asset correlation analysis"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    AI-powered CVE analysis with asset correlation
+    """
+    try:
+        # Check if CVE exists
+        cve = db.query(CVE).filter(CVE.cve_id == cve_id).first()
+        if not cve:
+            raise HTTPException(status_code=404, detail=f"CVE {cve_id} not found")
+        
+        # Check user permissions
+        if current_user.role not in ["admin", "manager", "analyst"]:
+            raise HTTPException(status_code=403, detail="Insufficient permissions to analyze CVEs")
+        
+        # Initialize AI agent
+        try:
+            from app.services.ai_agent import LocalAIAgent
+            ai_agent = LocalAIAgent()
+        except ImportError as e:
+            logger.error(f"Failed to import AI agent: {e}")
+            raise HTTPException(status_code=500, detail="AI agent not available")
+        
+        analysis_results = {
+            "cve_id": cve_id,
+            "analysis_timestamp": datetime.now().isoformat(),
+            "analyzed_by": current_user.username,
+            "status": "in_progress"
+        }
+        
+        logger.info(f"Starting AI analysis for CVE {cve_id}")
+        
+        # Perform AI analysis
+        try:
+            ai_analysis = await ai_agent.analyze_cve(cve.description, cve_id)
+            
+            if ai_analysis:
+                # Store AI analysis results in CVE record
+                cve.ai_risk_score = ai_analysis.get('risk_score')
+                cve.ai_summary = ai_analysis.get('summary')
+                cve.mitigation_suggestions = json.dumps(ai_analysis.get('mitigations', []))
+                cve.detection_methods = json.dumps(ai_analysis.get('detection_methods', []))
+                cve.upgrade_paths = json.dumps(ai_analysis.get('upgrade_paths', []))
+                
+                analysis_results.update({
+                    "ai_analysis": {
+                        "risk_score": ai_analysis.get('risk_score'),
+                        "summary": ai_analysis.get('summary'),
+                        "mitigations": ai_analysis.get('mitigations', []),
+                        "detection_methods": ai_analysis.get('detection_methods', []),
+                        "upgrade_paths": ai_analysis.get('upgrade_paths', [])
+                    }
+                })
+                
+                logger.info(f"AI analysis completed for {cve_id} with risk score: {ai_analysis.get('risk_score')}")
+                
+            else:
+                logger.warning(f"AI analysis returned empty result for {cve_id}")
+                analysis_results["ai_analysis_warning"] = "AI analysis returned no results"
+                
+        except Exception as e:
+            logger.error(f"AI analysis failed for {cve_id}: {e}")
+            analysis_results["ai_analysis_error"] = f"AI analysis failed: {str(e)}"
+            
+            # Provide fallback analysis
+            analysis_results["ai_analysis"] = {
+                "risk_score": _derive_fallback_risk_score(cve),
+                "summary": f"Manual analysis required for {cve_id}. AI analysis failed.",
+                "mitigations": ["Review vendor security advisories", "Apply security patches when available"],
+                "detection_methods": ["Check software version inventories", "Monitor for exploitation indicators"],
+                "upgrade_paths": ["Consult vendor documentation", "Plan upgrade timeline based on criticality"]
+            }
+        
+        # Asset correlation analysis (if requested)
+        if include_asset_correlation:
+            try:
+                correlation_results = await _perform_asset_correlation(cve, db, ai_analysis)
+                analysis_results["asset_correlation"] = correlation_results
+                
+                # Update CVE correlation confidence
+                if correlation_results.get("correlation_confidence", 0) > 0:
+                    cve.correlation_confidence = correlation_results["correlation_confidence"]
+                    
+            except Exception as e:
+                logger.error(f"Asset correlation failed for {cve_id}: {e}")
+                analysis_results["correlation_error"] = f"Asset correlation failed: {str(e)}"
+        
+        # Generate comprehensive recommendations based on AI analysis and asset correlation
+        recommendations = _generate_recommendations(
+            ai_analysis, 
+            analysis_results.get("asset_correlation", {}),
+            cve
+        )
+        analysis_results["recommendations"] = recommendations
+        
+        # Calculate overall risk assessment
+        risk_assessment = _calculate_risk_assessment(ai_analysis, analysis_results.get("asset_correlation", {}))
+        analysis_results["risk_assessment"] = risk_assessment
+        
+        # Mark CVE as processed and analyzed
+        cve.processed = True
+        cve.last_analyzed = datetime.now()
+        
+        # Commit all changes to database
+        db.commit()
+        
+        analysis_results["status"] = "completed"
+        analysis_results["message"] = f"AI-powered analysis completed for CVE {cve_id}"
+        
+        logger.info(f"Analysis completed for {cve_id}")
+        return analysis_results
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CVE analysis failed for {cve_id}: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+async def _perform_asset_correlation(cve: CVE, db: Session, ai_analysis: Dict) -> Dict:
+    """
+    Perform asset correlation analysis using AI insights
+    """
+    assets = db.query(Asset).filter(Asset.status == 'active').all()
+    affected_assets = []
+    
+    # Extract product information from AI analysis if available
+    ai_products = []
+    if ai_analysis and ai_analysis.get('summary'):
+        # Simple keyword extraction from AI summary
+        summary_lower = ai_analysis['summary'].lower()
+        common_products = [
+            'apache', 'nginx', 'mysql', 'postgresql', 'mongodb', 'redis',
+            'wordpress', 'drupal', 'joomla', 'tomcat', 'jenkins', 'gitlab',
+            'windows', 'linux', 'ubuntu', 'debian', 'centos', 'rhel',
+            'java', 'python', 'node.js', 'php', 'ruby', '.net'
+        ]
+        
+        for product in common_products:
+            if product in summary_lower:
+                ai_products.append(product)
+    
+    for asset in assets:
+        confidence = 0.0
+        match_reasons = []
+        
+        # Primary service correlation
+        if asset.primary_service and cve.description:
+            service_lower = asset.primary_service.lower()
+            description_lower = cve.description.lower()
+            
+            # Direct service name match
+            if service_lower in description_lower:
+                confidence += 0.6
+                match_reasons.append(f"Service '{asset.primary_service}' found in CVE description")
+            
+            # AI-identified product correlation
+            for product in ai_products:
+                if product in service_lower:
+                    confidence += 0.4
+                    match_reasons.append(f"AI identified affected product '{product}' matches service")
+        
+        # Vendor correlation
+        if asset.service_vendor and cve.description:
+            vendor_lower = asset.service_vendor.lower()
+            description_lower = cve.description.lower()
+            
+            if vendor_lower in description_lower:
+                confidence += 0.4
+                match_reasons.append(f"Vendor '{asset.service_vendor}' found in CVE description")
+        
+        # Operating system correlation
+        if asset.operating_system and cve.description:
+            os_lower = asset.operating_system.lower()
+            description_lower = cve.description.lower()
+            
+            for os_keyword in ['windows', 'linux', 'ubuntu', 'debian', 'centos', 'rhel']:
+                if os_keyword in os_lower and os_keyword in description_lower:
+                    confidence += 0.3
+                    match_reasons.append(f"Operating system '{asset.operating_system}' potentially affected")
+        
+        # CPE correlation (if available)
+        if asset.cpe_name_id and hasattr(cve, 'cpe_entries') and cve.cpe_entries:
+            try:
+                cpe_entries = json.loads(cve.cpe_entries) if isinstance(cve.cpe_entries, str) else cve.cpe_entries
+                if isinstance(cpe_entries, list) and asset.cpe_name_id in cpe_entries:
+                    confidence += 0.8
+                    match_reasons.append(f"Direct CPE match: {asset.cpe_name_id}")
+            except (json.JSONDecodeError, TypeError):
+                pass
+        
+        # AI risk score amplification for critical assets
+        if ai_analysis and ai_analysis.get('risk_score', 0) >= 7.0:
+            if asset.criticality in ['critical', 'high']:
+                confidence *= 1.2  # Amplify correlation for high-risk CVEs on critical assets
+                if confidence > 0:
+                    match_reasons.append("High-risk CVE on critical asset - elevated correlation")
+        
+        # Include assets with meaningful correlation
+        if confidence > 0.25:
+            asset_risk_score = confidence * ai_analysis.get('risk_score', 5.0) / 10.0 if ai_analysis else confidence * 0.5
+            
+            affected_assets.append({
+                "asset_id": asset.id,
+                "asset_name": asset.name,
+                "asset_type": asset.asset_type,
+                "environment": asset.environment,
+                "criticality": asset.criticality,
+                "confidence": min(confidence, 1.0),
+                "asset_risk_score": round(asset_risk_score, 3),
+                "match_reasons": match_reasons,
+                "primary_service": asset.primary_service,
+                "service_vendor": asset.service_vendor,
+                "service_version": asset.service_version,
+                "operating_system": asset.operating_system,
+                "location": asset.location
+            })
+    
+    # Sort by risk score and confidence
+    affected_assets.sort(key=lambda x: (x['asset_risk_score'], x['confidence']), reverse=True)
+    
+    # Calculate correlation confidence
+    correlation_confidence = max([a['confidence'] for a in affected_assets]) if affected_assets else 0.0
+    
+    # Environment risk breakdown
+    environment_risk = {}
+    for asset in affected_assets:
+        env = asset['environment']
+        if env not in environment_risk:
+            environment_risk[env] = {
+                'asset_count': 0,
+                'max_risk': 0.0,
+                'critical_assets': 0,
+                'avg_confidence': 0.0
+            }
+        
+        environment_risk[env]['asset_count'] += 1
+        environment_risk[env]['max_risk'] = max(environment_risk[env]['max_risk'], asset['asset_risk_score'])
+        environment_risk[env]['avg_confidence'] += asset['confidence']
+        
+        if asset['criticality'] in ['critical', 'high']:
+            environment_risk[env]['critical_assets'] += 1
+    
+    # Calculate average confidence per environment
+    for env_data in environment_risk.values():
+        if env_data['asset_count'] > 0:
+            env_data['avg_confidence'] = round(env_data['avg_confidence'] / env_data['asset_count'], 3)
+    
+    return {
+        "total_assets_analyzed": len(assets),
+        "potentially_affected_assets": len(affected_assets),
+        "correlation_confidence": round(correlation_confidence, 3),
+        "affected_assets": affected_assets[:25],  # Limit for response size
+        "environment_risk": environment_risk,
+        "ai_products_identified": ai_products
+    }
+
+
+def _generate_recommendations(ai_analysis: Dict, correlation_data: Dict, cve: CVE) -> List[str]:
+    """
+    Generate actionable recommendations based on AI analysis and asset correlation
+    """
+    recommendations = []
+    
+    # AI-based recommendations
+    if ai_analysis:
+        risk_score = ai_analysis.get('risk_score', 0)
+        
+        if risk_score >= 9.0:
+            recommendations.append("🚨 CRITICAL: Immediate emergency response required")
+            recommendations.append("🚨 Activate incident response procedures")
+        elif risk_score >= 7.0:
+            recommendations.append("⚠️  HIGH PRIORITY: Address within 24-48 hours")
+        elif risk_score >= 4.0:
+            recommendations.append("📋 MEDIUM PRIORITY: Plan remediation within 1-2 weeks")
+        else:
+            recommendations.append("📝 LOW PRIORITY: Include in routine patching cycle")
+        
+        # Add AI-generated mitigations
+        if ai_analysis.get('mitigations'):
+            for mitigation in ai_analysis['mitigations'][:3]:  # Top 3 mitigations
+                recommendations.append(f"🛡️  {mitigation}")
+    
+    # Asset correlation-based recommendations
+    if correlation_data:
+        affected_count = correlation_data.get('potentially_affected_assets', 0)
+        
+        if affected_count > 0:
+            recommendations.append(f"🔍 Review {affected_count} potentially affected assets")
+            
+            # Environment-specific recommendations
+            env_risk = correlation_data.get('environment_risk', {})
+            for env, risk_data in env_risk.items():
+                if risk_data['critical_assets'] > 0:
+                    recommendations.append(f"🏭 Prioritize {risk_data['critical_assets']} critical assets in {env} environment")
+        
+        # High correlation confidence recommendations
+        if correlation_data.get('correlation_confidence', 0) >= 0.7:
+            recommendations.append("📊 High confidence correlations found - prioritize asset verification")
+        
+    # General security recommendations
+    if cve.severity in ['CRITICAL', 'HIGH']:
+        recommendations.append("🔄 Check for available security patches")
+        recommendations.append("📡 Monitor for signs of active exploitation")
+        recommendations.append("🔒 Consider temporary mitigations if patches unavailable")
+    
+    recommendations.append("📋 Update asset inventory and software versions")
+    recommendations.append("📈 Review and update vulnerability management processes")
+    
+    return recommendations
+
+
+def _calculate_risk_assessment(ai_analysis: Dict, correlation_data: Dict) -> Dict:
+    """
+    Calculate overall risk assessment combining AI and correlation analysis
+    """
+    base_risk = ai_analysis.get('risk_score', 5.0) if ai_analysis else 5.0
+    
+    # Amplify risk based on asset correlation
+    affected_assets = correlation_data.get('potentially_affected_assets', 0)
+    correlation_confidence = correlation_data.get('correlation_confidence', 0)
+    
+    # Risk amplification factors
+    asset_factor = min(1 + (affected_assets * 0.1), 2.0)  # Max 2x amplification
+    confidence_factor = 1 + (correlation_confidence * 0.3)  # Up to 30% amplification
+    
+    adjusted_risk = base_risk * asset_factor * confidence_factor
+    adjusted_risk = min(adjusted_risk, 10.0)  # Cap at 10.0
+    
+    # Risk level determination
+    if adjusted_risk >= 8.5:
+        risk_level = "CRITICAL"
+        urgency = "immediate"
+    elif adjusted_risk >= 7.0:
+        risk_level = "HIGH"
+        urgency = "urgent"
+    elif adjusted_risk >= 4.0:
+        risk_level = "MEDIUM"
+        urgency = "planned"
+    else:
+        risk_level = "LOW"
+        urgency = "routine"
+    
+    return {
+        "base_risk_score": round(base_risk, 2),
+        "adjusted_risk_score": round(adjusted_risk, 2),
+        "risk_level": risk_level,
+        "urgency": urgency,
+        "affected_assets": affected_assets,
+        "correlation_confidence": correlation_confidence,
+        "requires_immediate_attention": adjusted_risk >= 8.5 or (
+            affected_assets > 0 and 
+            correlation_confidence > 0.7 and 
+            base_risk >= 7.0
+        )
+    }
+
+
+def _derive_fallback_risk_score(cve: CVE) -> float:
+    """
+    Derive a fallback risk score when AI analysis fails
+    """
+    score = 5.0  # Default medium risk
+    
+    if cve.cvss_score:
+        score = cve.cvss_score
+    elif cve.severity:
+        severity_scores = {
+            'CRITICAL': 9.0,
+            'HIGH': 7.5,
+            'MEDIUM': 5.0,
+            'LOW': 3.0
+        }
+        score = severity_scores.get(cve.severity.upper(), 5.0)
+    
+    # Check for high-risk keywords in description
+    if cve.description:
+        high_risk_keywords = [
+            'remote code execution', 'privilege escalation', 'authentication bypass',
+            'buffer overflow', 'sql injection', 'memory corruption'
+        ]
+        
+        description_lower = cve.description.lower()
+        for keyword in high_risk_keywords:
+            if keyword in description_lower:
+                score = min(score + 1.0, 10.0)
+                break
+    
+    return round(score, 1)
