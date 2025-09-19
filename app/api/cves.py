@@ -1,29 +1,33 @@
 """
-Updated CVE API endpoints for Asset-Based Architecture
+Cleaned CVE API Endpoints - Asset-Based Architecture
 app/api/cves.py
+
+Clean implementation focused on:
+- Asset-based CVE correlation
+- CPE-based vulnerability assessment
+- Asset risk analysis
+- No service-based dependencies
 """
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
 from typing import List, Optional, Dict, Any
+from datetime import datetime
+from pydantic import BaseModel, field_validator
+import logging
+import json
+
 from app.core.database import get_db
 from app.models.cve import CVE
-from app.models.asset import Asset  # Changed from service imports
+from app.models.asset import Asset
 from app.api.auth import get_current_user
 from app.models.user import User
-from pydantic import BaseModel, field_validator
-from datetime import datetime
-import logging
-from fastapi import BackgroundTasks
-from datetime import datetime
-import asyncio
-import json
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Updated Response Models for Asset-Based Architecture
+# Pydantic Models
 class AssetResponse(BaseModel):
     """Asset information for CVE correlations"""
     id: int
@@ -42,41 +46,25 @@ class AssetResponse(BaseModel):
     class Config:
         from_attributes = True
 
-class AssetCorrelationResponse(BaseModel):
-    """Asset correlation with CVE"""
-    id: int
-    asset: AssetResponse
-    confidence_score: float
-    correlation_method: str
-    status: str
-    impact_score: Optional[float]
-    correlation_details: Optional[Dict[str, Any]]
-    affected_services: Optional[List[str]] = None  # Services on this asset that are affected
-    
-    class Config:
-        from_attributes = True
-
 class CVEResponse(BaseModel):
+    """CVE response with asset correlation information"""
     id: int
     cve_id: str
     description: str
     cvss_score: Optional[float]
     severity: Optional[str]
-    ai_risk_score: Optional[float]
-    ai_summary: Optional[str]
     published_date: Optional[str]
-    mitigation_suggestions: Optional[str] = None
-    detection_methods: Optional[str] = None
-    upgrade_paths: Optional[str] = None
     
-    # Enhanced fields for asset correlation
+    # Asset correlation fields
     affected_products: Optional[Dict[str, Any]] = None
     cpe_entries: Optional[List[str]] = None
     correlation_confidence: Optional[float] = None
-    affects_assets: Optional[List[int]] = None  # Changed from service types
+    potentially_affected_assets: Optional[int] = None
     
-    # Related asset correlations
-    asset_correlations: Optional[List[AssetCorrelationResponse]] = None
+    # AI enhancement fields (if available)
+    ai_risk_score: Optional[float] = None
+    ai_summary: Optional[str] = None
+    mitigation_suggestions: Optional[str] = None
     
     @field_validator('published_date', mode='before')
     @classmethod
@@ -88,48 +76,53 @@ class CVEResponse(BaseModel):
     class Config:
         from_attributes = True
 
-# Request Models
+class AssetVulnerabilityResponse(BaseModel):
+    """Asset with its vulnerability assessment"""
+    asset: AssetResponse
+    vulnerability_count: int
+    critical_cves: int
+    high_cves: int
+    medium_cves: int
+    low_cves: int
+    risk_score: float
+    most_critical_cve: Optional[str] = None
+    
+class CollectionRequest(BaseModel):
+    """CVE collection request parameters"""
+    days_back: int = 7
+    use_files: bool = True
+    force_refresh: bool = False
+
 class CorrelationRequest(BaseModel):
+    """Asset correlation request parameters"""
     confidence_threshold: float = 0.7
     include_low_confidence: bool = False
+    asset_filter: Optional[str] = None
 
-class CPEMappingRequest(BaseModel):
-    """Mapping CVE CPE entries to asset services"""
-    cpe_name: str
-    asset_service_pattern: str  # Pattern to match against asset primary_service
-    vendor_pattern: Optional[str] = None
-    confidence: float = 1.0
-    notes: Optional[str] = None
-
-# Statistics and reporting
-@router.get("/correlation-stats")
-async def get_correlation_stats(
+# Statistics and Information Endpoints
+@router.get("/stats")
+async def get_cve_statistics(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get correlation statistics for asset-based architecture"""
+    """Get comprehensive CVE and asset correlation statistics"""
     try:
-        # Check if we have any CVEs first
+        # Basic CVE statistics
         total_cves = db.query(CVE).count()
+        recent_cves = db.query(CVE).filter(
+            CVE.published_date >= datetime.now().replace(day=1)  # This month
+        ).count()
         
-        if total_cves == 0:
-            return {
-                "total_cves": 0,
-                "correlated_cves": 0,
-                "correlation_coverage": 0,
-                "affected_assets": 0,
-                "critical_assets_affected": 0,
-                "environments_affected": [],
-                "message": "No CVEs found in database"
-            }
+        # Severity breakdown
+        severity_stats = db.query(
+            CVE.severity,
+            func.count(CVE.id)
+        ).group_by(CVE.severity).all()
         
-        # Count correlated CVEs (those with correlation confidence > 0)
-        correlated_cves = db.query(CVE).filter(CVE.correlation_confidence > 0).count()
+        severity_breakdown = {severity or 'unknown': count for severity, count in severity_stats}
         
-        # Get asset correlation statistics
+        # Asset correlation statistics
         total_assets = db.query(Asset).count()
-        
-        # Count assets that could be affected (have services with CPE references)
         assets_with_services = db.query(Asset).filter(
             or_(
                 Asset.primary_service.isnot(None),
@@ -138,70 +131,278 @@ async def get_correlation_stats(
             )
         ).count()
         
-        # Count critical assets that could be affected
+        # Critical assets
         critical_assets = db.query(Asset).filter(
-            and_(
-                Asset.criticality.in_(['critical', 'high']),
-                or_(
-                    Asset.primary_service.isnot(None),
-                    Asset.cpe_name_id.isnot(None)
-                )
-            )
+            Asset.criticality.in_(['critical', 'high'])
         ).count()
         
-        # Get environments with assets
-        environments = db.query(Asset.environment).distinct().all()
-        environment_list = [env[0] for env in environments if env[0]]
+        # Environment breakdown
+        env_stats = db.query(
+            Asset.environment,
+            func.count(Asset.id)
+        ).group_by(Asset.environment).all()
+        
+        environment_breakdown = {env: count for env, count in env_stats}
+        
+        # CVEs with correlation confidence
+        correlated_cves = db.query(CVE).filter(
+            CVE.correlation_confidence > 0
+        ).count()
         
         return {
-            "total_cves": total_cves,
-            "correlated_cves": correlated_cves,
-            "correlation_coverage": (correlated_cves / total_cves * 100) if total_cves > 0 else 0,
-            "total_assets": total_assets,
-            "assets_with_services": assets_with_services,
-            "critical_assets_with_services": critical_assets,
-            "environments_affected": environment_list,
-            "asset_coverage": (assets_with_services / total_assets * 100) if total_assets > 0 else 0
+            "cve_statistics": {
+                "total_cves": total_cves,
+                "recent_cves": recent_cves,
+                "severity_breakdown": severity_breakdown,
+                "correlated_cves": correlated_cves,
+                "correlation_coverage": (correlated_cves / total_cves * 100) if total_cves > 0 else 0
+            },
+            "asset_statistics": {
+                "total_assets": total_assets,
+                "assets_with_services": assets_with_services,
+                "critical_assets": critical_assets,
+                "environment_breakdown": environment_breakdown,
+                "asset_coverage": (assets_with_services / total_assets * 100) if total_assets > 0 else 0
+            },
+            "generated_at": datetime.now().isoformat()
         }
         
     except Exception as e:
-        logger.error(f"Failed to get correlation stats: {e}")
+        logger.error(f"Failed to get CVE statistics: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to retrieve statistics: {str(e)}")
 
-@router.post("/correlate-with-assets")
-async def correlate_cves_with_assets(
+# CVE Collection Endpoints
+@router.post("/collect")
+async def collect_cves(
     background_tasks: BackgroundTasks,
-    confidence_threshold: float = 0.7,
+    request: CollectionRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Run correlation analysis between CVEs and assets"""
+    """Start CVE collection process"""
     if current_user.role not in ["admin", "manager"]:
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     
-    async def run_asset_correlation():
+    async def run_collection():
         try:
-            stats = await correlate_cves_to_assets(db, confidence_threshold)
-            logger.info(f"Asset correlation completed: {stats}")
+            from app.services.cve_collector import CVECollector
+            
+            collector = CVECollector()
+            stats = await collector.run_asset_focused_collection(
+                db, 
+                days_back=request.days_back,
+                use_files=request.use_files
+            )
+            
+            logger.info(f"CVE collection completed: {stats}")
         except Exception as e:
-            logger.error(f"Asset correlation failed: {e}")
+            logger.error(f"CVE collection failed: {e}")
     
-    background_tasks.add_task(run_asset_correlation)
-    return {"message": f"Asset correlation analysis started with confidence threshold {confidence_threshold}"}
+    background_tasks.add_task(run_collection)
+    
+    return {
+        "message": "CVE collection started",
+        "parameters": {
+            "days_back": request.days_back,
+            "use_files": request.use_files,
+            "force_refresh": request.force_refresh
+        },
+        "status": "background_task_started"
+    }
 
-@router.get("/assets-at-risk")
+@router.post("/collect-immediate")
+async def collect_cves_immediate(
+    request: CollectionRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Collect CVEs immediately (not as background task)"""
+    if current_user.role not in ["admin", "manager"]:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    
+    try:
+        from app.services.cve_collector import CVECollector
+        
+        collector = CVECollector()
+        stats = await collector.run_asset_focused_collection(
+            db,
+            days_back=request.days_back,
+            use_files=request.use_files
+        )
+        
+        return {
+            "message": "CVE collection completed",
+            "statistics": stats,
+            "parameters": {
+                "days_back": request.days_back,
+                "use_files": request.use_files
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Immediate CVE collection failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Collection failed: {str(e)}")
+
+# CVE Retrieval Endpoints
+@router.get("/", response_model=List[CVEResponse])
+async def get_cves(
+    skip: int = 0,
+    limit: int = 100,
+    severity: Optional[str] = None,
+    environment_filter: Optional[str] = None,
+    correlation_confidence_min: Optional[float] = None,
+    search: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get CVEs with filtering options"""
+    try:
+        query = db.query(CVE)
+        
+        # Apply filters
+        if severity:
+            query = query.filter(CVE.severity == severity.upper())
+        
+        if correlation_confidence_min is not None:
+            query = query.filter(CVE.correlation_confidence >= correlation_confidence_min)
+        
+        if search:
+            query = query.filter(
+                or_(
+                    CVE.cve_id.ilike(f"%{search}%"),
+                    CVE.description.ilike(f"%{search}%")
+                )
+            )
+        
+        # Order by severity and date
+        severity_order = {
+            'CRITICAL': 4,
+            'HIGH': 3,
+            'MEDIUM': 2,
+            'LOW': 1
+        }
+        
+        cves = query.order_by(
+            CVE.published_date.desc()
+        ).offset(skip).limit(limit).all()
+        
+        # Add potentially affected assets count for each CVE
+        for cve in cves:
+            if environment_filter:
+                # Count assets in specific environment that might be affected
+                asset_count = db.query(Asset).filter(
+                    and_(
+                        Asset.environment == environment_filter,
+                        or_(
+                            Asset.primary_service.isnot(None),
+                            Asset.cpe_name_id.isnot(None)
+                        )
+                    )
+                ).count()
+                cve.potentially_affected_assets = asset_count
+            else:
+                cve.potentially_affected_assets = None
+        
+        return cves
+        
+    except Exception as e:
+        logger.error(f"Failed to get CVEs: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve CVEs: {str(e)}")
+
+@router.get("/{cve_id}")
+async def get_cve_details(
+    cve_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get detailed information about a specific CVE"""
+    try:
+        cve = db.query(CVE).filter(CVE.cve_id == cve_id).first()
+        if not cve:
+            raise HTTPException(status_code=404, detail="CVE not found")
+        
+        # Find potentially affected assets
+        potentially_affected = []
+        
+        if cve.cpe_entries:
+            # Simple CPE-based matching
+            for cpe in cve.cpe_entries:
+                if cpe and len(cpe) > 10:  # Basic CPE validation
+                    try:
+                        # Parse CPE (cpe:2.3:a:vendor:product:version:...)
+                        parts = cpe.split(':')
+                        if len(parts) >= 5:
+                            vendor = parts[3] if parts[3] != '*' else ''
+                            product = parts[4] if parts[4] != '*' else ''
+                            
+                            if vendor or product:
+                                # Find matching assets
+                                asset_query = db.query(Asset)
+                                conditions = []
+                                
+                                if vendor:
+                                    conditions.extend([
+                                        Asset.service_vendor.ilike(f"%{vendor}%"),
+                                        Asset.vendor.ilike(f"%{vendor}%")
+                                    ])
+                                
+                                if product:
+                                    conditions.extend([
+                                        Asset.primary_service.ilike(f"%{product}%"),
+                                        Asset.operating_system.ilike(f"%{product}%")
+                                    ])
+                                
+                                if conditions:
+                                    matching_assets = asset_query.filter(
+                                        or_(*conditions)
+                                    ).limit(50).all()
+                                    
+                                    for asset in matching_assets:
+                                        if asset.id not in [a['asset']['id'] for a in potentially_affected]:
+                                            potentially_affected.append({
+                                                'asset': {
+                                                    'id': asset.id,
+                                                    'name': asset.name,
+                                                    'asset_type': asset.asset_type,
+                                                    'environment': asset.environment,
+                                                    'criticality': asset.criticality,
+                                                    'primary_service': asset.primary_service,
+                                                    'service_vendor': asset.service_vendor
+                                                },
+                                                'match_reason': f"CPE match: {vendor}/{product}",
+                                                'confidence': 0.7  # Placeholder confidence
+                                            })
+                    
+                    except Exception as e:
+                        logger.debug(f"Error parsing CPE {cpe}: {e}")
+        
+        return {
+            'cve': cve,
+            'potentially_affected_assets': potentially_affected[:20],  # Limit results
+            'total_potentially_affected': len(potentially_affected),
+            'analysis_timestamp': datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get CVE details for {cve_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve CVE details: {str(e)}")
+
+# Asset Vulnerability Assessment Endpoints
+@router.get("/assets-at-risk", response_model=List[AssetVulnerabilityResponse])
 async def get_assets_at_risk(
-    severity_filter: Optional[str] = None,
     environment_filter: Optional[str] = None,
     criticality_filter: Optional[str] = None,
-    confidence_min: float = 0.7,
+    min_vulnerability_count: int = 1,
+    limit: int = 50,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get assets that are potentially at risk based on CVE correlations"""
     try:
         # Start with assets that have identifiable services
-        query = db.query(Asset).filter(
+        asset_query = db.query(Asset).filter(
             or_(
                 Asset.primary_service.isnot(None),
                 Asset.cpe_name_id.isnot(None),
@@ -211,546 +412,253 @@ async def get_assets_at_risk(
         
         # Apply filters
         if environment_filter:
-            query = query.filter(Asset.environment == environment_filter)
+            asset_query = asset_query.filter(Asset.environment == environment_filter)
         
         if criticality_filter:
-            query = query.filter(Asset.criticality == criticality_filter)
+            asset_query = asset_query.filter(Asset.criticality == criticality_filter)
         
-        assets = query.all()
+        assets = asset_query.limit(limit * 2).all()  # Get more for filtering
         
-        # For each asset, find potential CVE matches
         assets_at_risk = []
+        
         for asset in assets:
-            risk_score = 0
-            matching_cves = []
+            # Find potential CVE matches for this asset
+            vulnerability_count = 0
+            severity_counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0}
+            risk_score = 0.0
+            most_critical_cve = None
+            highest_cvss = 0.0
             
-            # Simple correlation based on service names and vendors
+            # Check primary service
             if asset.primary_service:
-                # Find CVEs that might affect this asset's primary service
-                cve_matches = db.query(CVE).filter(
+                matching_cves = db.query(CVE).filter(
                     or_(
                         CVE.description.ilike(f"%{asset.primary_service}%"),
                         CVE.description.ilike(f"%{asset.service_vendor}%") if asset.service_vendor else False
                     )
                 ).all()
                 
-                for cve in cve_matches:
-                    if severity_filter and cve.severity != severity_filter:
-                        continue
+                for cve in matching_cves:
+                    vulnerability_count += 1
+                    if cve.severity in severity_counts:
+                        severity_counts[cve.severity] += 1
                     
-                    matching_cves.append({
-                        "cve_id": cve.cve_id,
-                        "severity": cve.severity,
-                        "cvss_score": cve.cvss_score,
-                        "description": cve.description[:200] + "..." if len(cve.description) > 200 else cve.description
-                    })
+                    if cve.cvss_score and cve.cvss_score > highest_cvss:
+                        highest_cvss = cve.cvss_score
+                        most_critical_cve = cve.cve_id
                     
-                    # Calculate risk score
-                    if cve.cvss_score:
-                        risk_score += cve.cvss_score
+                    risk_score += (cve.cvss_score or 5.0) * 0.5  # Weight factor
             
             # Check additional services
             if asset.additional_services:
                 for service in asset.additional_services:
-                    service_name = service.get('name', '')
+                    service_name = service.get('name', '') if isinstance(service, dict) else str(service)
                     if service_name:
                         additional_cves = db.query(CVE).filter(
                             CVE.description.ilike(f"%{service_name}%")
-                        ).all()
+                        ).limit(10).all()
                         
                         for cve in additional_cves:
-                            if severity_filter and cve.severity != severity_filter:
-                                continue
+                            vulnerability_count += 1
+                            if cve.severity in severity_counts:
+                                severity_counts[cve.severity] += 1
                             
-                            # Avoid duplicate CVEs
-                            if not any(mc['cve_id'] == cve.cve_id for mc in matching_cves):
-                                matching_cves.append({
-                                    "cve_id": cve.cve_id,
-                                    "severity": cve.severity,
-                                    "cvss_score": cve.cvss_score,
-                                    "description": cve.description[:200] + "..." if len(cve.description) > 200 else cve.description,
-                                    "affects_service": service_name
-                                })
-                                
-                                if cve.cvss_score:
-                                    risk_score += cve.cvss_score * 0.5  # Lower weight for additional services
+                            risk_score += (cve.cvss_score or 4.0) * 0.3  # Lower weight for additional services
             
-            if matching_cves:
-                assets_at_risk.append({
-                    "asset": {
-                        "id": asset.id,
-                        "name": asset.name,
-                        "asset_type": asset.asset_type,
-                        "ip_address": asset.ip_address,
-                        "hostname": asset.hostname,
-                        "primary_service": asset.primary_service,
-                        "service_vendor": asset.service_vendor,
-                        "service_version": asset.service_version,
-                        "environment": asset.environment,
-                        "criticality": asset.criticality,
-                        "location": asset.location,
-                        "owner_team": asset.owner_team
-                    },
-                    "risk_score": risk_score,
-                    "matching_cves": matching_cves,
-                    "cve_count": len(matching_cves)
-                })
+            # Apply vulnerability count filter
+            if vulnerability_count >= min_vulnerability_count:
+                assets_at_risk.append(AssetVulnerabilityResponse(
+                    asset=AssetResponse.from_orm(asset),
+                    vulnerability_count=vulnerability_count,
+                    critical_cves=severity_counts['CRITICAL'],
+                    high_cves=severity_counts['HIGH'],
+                    medium_cves=severity_counts['MEDIUM'],
+                    low_cves=severity_counts['LOW'],
+                    risk_score=round(risk_score, 2),
+                    most_critical_cve=most_critical_cve
+                ))
         
         # Sort by risk score descending
-        assets_at_risk.sort(key=lambda x: x["risk_score"], reverse=True)
+        assets_at_risk.sort(key=lambda x: x.risk_score, reverse=True)
         
-        return {
-            "total_assets_analyzed": len(assets),
-            "assets_at_risk": len(assets_at_risk),
-            "risk_analysis": assets_at_risk[:50]  # Limit to top 50 for performance
-        }
+        return assets_at_risk[:limit]
         
     except Exception as e:
         logger.error(f"Failed to get assets at risk: {e}")
         raise HTTPException(status_code=500, detail=f"Risk analysis failed: {str(e)}")
 
-# Main CVE endpoints
-@router.get("/", response_model=List[CVEResponse])
-async def get_cves(
-    skip: int = 0,
-    limit: int = 100,
-    severity: Optional[str] = None,
-    environment: Optional[str] = None,
-    asset_type: Optional[str] = None,
-    correlation_confidence_min: Optional[float] = None,
-    include_asset_correlations: bool = False,
+@router.get("/asset/{asset_id}/vulnerabilities")
+async def get_asset_vulnerabilities(
+    asset_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get CVEs with enhanced filtering based on assets"""
+    """Get detailed vulnerability assessment for a specific asset"""
     try:
-        query = db.query(CVE)
+        asset = db.query(Asset).filter(Asset.id == asset_id).first()
+        if not asset:
+            raise HTTPException(status_code=404, detail="Asset not found")
         
-        if severity:
-            query = query.filter(CVE.severity == severity)
+        vulnerabilities = []
         
-        if correlation_confidence_min is not None:
-            query = query.filter(CVE.correlation_confidence >= correlation_confidence_min)
+        # Check primary service vulnerabilities
+        if asset.primary_service:
+            primary_cves = db.query(CVE).filter(
+                or_(
+                    CVE.description.ilike(f"%{asset.primary_service}%"),
+                    CVE.description.ilike(f"%{asset.service_vendor}%") if asset.service_vendor else False
+                )
+            ).limit(100).all()
+            
+            for cve in primary_cves:
+                vulnerabilities.append({
+                    'cve': CVEResponse.from_orm(cve),
+                    'affects_service': asset.primary_service,
+                    'match_confidence': 0.6,  # Placeholder confidence
+                    'match_method': 'service_name_match'
+                })
         
-        # Filter CVEs that might affect specific asset types
-        if asset_type:
-            # Find CVEs that could affect assets of this type
-            # This is a simple text-based correlation - could be enhanced
-            query = query.filter(CVE.description.ilike(f"%{asset_type}%"))
+        # Check additional services
+        if asset.additional_services:
+            for service in asset.additional_services:
+                service_name = service.get('name', '') if isinstance(service, dict) else str(service)
+                if service_name:
+                    service_cves = db.query(CVE).filter(
+                        CVE.description.ilike(f"%{service_name}%")
+                    ).limit(20).all()
+                    
+                    for cve in service_cves:
+                        # Avoid duplicates
+                        if not any(v['cve'].cve_id == cve.cve_id for v in vulnerabilities):
+                            vulnerabilities.append({
+                                'cve': CVEResponse.from_orm(cve),
+                                'affects_service': service_name,
+                                'match_confidence': 0.5,
+                                'match_method': 'additional_service_match'
+                            })
         
-        # Filter CVEs that might affect assets in specific environment
-        if environment:
-            # This would need more sophisticated correlation logic
-            # For now, we'll get all CVEs and filter on the frontend
-            pass
+        # Sort by CVSS score descending
+        vulnerabilities.sort(
+            key=lambda x: x['cve'].cvss_score or 0.0,
+            reverse=True
+        )
         
-        cves = query.offset(skip).limit(limit).all()
+        # Calculate summary statistics
+        total_vulns = len(vulnerabilities)
+        severity_counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0}
+        total_risk_score = 0.0
         
-        # Include asset correlations if requested
-        if include_asset_correlations:
-            for cve in cves:
-                # Simple correlation logic - match CVE description to asset services
-                potentially_affected_assets = db.query(Asset).filter(
-                    or_(
-                        Asset.primary_service.ilike(f"%{cve.description.split()[0] if cve.description else ''}%"),
-                        Asset.service_vendor.ilike(f"%{cve.description.split()[0] if cve.description else ''}%")
-                    )
-                ).limit(10).all()  # Limit for performance
-                
-                cve.asset_correlations = [
-                    {
-                        "asset": asset,
-                        "confidence_score": 0.5,  # Placeholder confidence
-                        "correlation_method": "description_match",
-                        "status": "potential"
-                    }
-                    for asset in potentially_affected_assets
-                ]
+        for vuln in vulnerabilities:
+            cve = vuln['cve']
+            if cve.severity in severity_counts:
+                severity_counts[cve.severity] += 1
+            
+            if cve.cvss_score:
+                total_risk_score += cve.cvss_score * vuln['match_confidence']
         
-        return cves
+        return {
+            'asset': AssetResponse.from_orm(asset),
+            'vulnerability_summary': {
+                'total_vulnerabilities': total_vulns,
+                'critical_count': severity_counts['CRITICAL'],
+                'high_count': severity_counts['HIGH'],
+                'medium_count': severity_counts['MEDIUM'],
+                'low_count': severity_counts['LOW'],
+                'total_risk_score': round(total_risk_score, 2)
+            },
+            'vulnerabilities': vulnerabilities[:50],  # Limit to top 50
+            'analysis_timestamp': datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get vulnerabilities for asset {asset_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Vulnerability assessment failed: {str(e)}")
+
+# Testing and Utility Endpoints
+@router.get("/test-collection")
+async def test_cve_collection(
+    days_back: int = 1,
+    use_files: bool = True,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Test CVE collection functionality"""
+    if current_user.role not in ["admin", "manager"]:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    
+    try:
+        from app.services.cve_collector import CVECollector
+        
+        collector = CVECollector()
+        
+        # Test asset keyword extraction
+        asset_keywords = collector.get_asset_keywords(db)
+        
+        # Test collection method
+        if use_files:
+            test_result = await collector.collect_cves_from_files(db, days_back)
+        else:
+            test_result = await collector.collect_recent_cves_api(db, days_back)
+        
+        return {
+            "test_completed": True,
+            "method_used": "files" if use_files else "api",
+            "days_back": days_back,
+            "asset_keywords_found": len(asset_keywords),
+            "sample_keywords": list(asset_keywords)[:10],
+            "cves_found": len(test_result) if test_result else 0,
+            "sample_cves": [cve.get('cve_id') for cve in test_result[:5]] if test_result else [],
+            "test_timestamp": datetime.now().isoformat()
+        }
         
     except Exception as e:
-        logger.error(f"Failed to get CVEs: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve CVEs: {str(e)}")
-    
+        logger.error(f"CVE collection test failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Test failed: {str(e)}")
+
+# Legacy compatibility endpoints (redirects)
 @router.post("/enhance-collection")
-async def enhanced_cve_collection(
+async def legacy_enhance_collection(
     background_tasks: BackgroundTasks,
     days_back: int = 7,
     use_files: bool = True,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Enhanced CVE collection using your updated collector"""
-    if current_user.role not in ["admin", "manager"]:
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    """Legacy endpoint - redirects to new collect endpoint"""
+    logger.info("Legacy enhance-collection endpoint called - redirecting to /collect")
     
-    async def run_enhanced_collection():
-        try:
-            from app.services.cve_collector import CVECollector
-            
-            collector = CVECollector()
-            await collector.run_service_specific_collection(
-                db, 
-                days_back=days_back, 
-                use_files=use_files
-            )
-            
-            logger.info(f"Enhanced CVE collection completed for last {days_back} days (use_files={use_files})")
-        except Exception as e:
-            logger.error(f"Enhanced CVE collection failed: {e}")
-    
-    background_tasks.add_task(run_enhanced_collection)
-    
-    return {
-        "message": f"Enhanced CVE collection started for last {days_back} days",
-        "method": "file_download" if use_files else "api_calls",
-        "status": "queued"
-    }
-    
-@router.get("/collection-stats")
-async def get_collection_stats(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get CVE collection statistics"""
-    try:
-        from sqlalchemy import func
-        from datetime import timedelta
-        
-        # Get basic counts
-        total_cves = db.query(func.count(CVE.id)).scalar() or 0
-        
-        # Get recent CVEs
-        now = datetime.now()
-        yesterday = now - timedelta(days=1)
-        last_week = now - timedelta(days=7)
-        
-        cves_last_24h = db.query(func.count(CVE.id)).filter(
-            CVE.published_date >= yesterday
-        ).scalar() or 0
-        
-        cves_last_week = db.query(func.count(CVE.id)).filter(
-            CVE.published_date >= last_week
-        ).scalar() or 0
-        
-        # Get severity breakdown
-        severity_stats = db.query(
-            CVE.severity,
-            func.count(CVE.id).label('count')
-        ).group_by(CVE.severity).all()
-        
-        severity_breakdown = {}
-        for severity, count in severity_stats:
-            severity_breakdown[severity or 'UNKNOWN'] = count
-        
-        return {
-            "total_cves": total_cves,
-            "cves_last_24h": cves_last_24h,
-            "cves_last_week": cves_last_week,
-            "severity_breakdown": severity_breakdown,
-            "last_updated": now.isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to get collection stats: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get statistics")
+    request = CollectionRequest(days_back=days_back, use_files=use_files)
+    return await collect_cves(background_tasks, request, current_user, db)
 
 @router.post("/manual-collect")
-async def manual_cve_collection(
-    days_back: int = 7,
+async def legacy_manual_collect(
+    days_back: int = 1,
     use_files: bool = True,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    """Legacy endpoint - redirects to immediate collection"""
+    logger.info("Legacy manual-collect endpoint called - redirecting to /collect-immediate")
     
-    """Manual CVE collection with immediate response"""
-    if current_user.role not in ["admin", "manager"]:
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
-    
-    try:
-        from app.services.cve_collector import CVECollector
-        
-        start_time = datetime.now()
-        collector = CVECollector()
-        
-        # Run collection
-        await collector.run_service_specific_collection(
-            db, 
-            days_back=days_back, 
-            use_files=use_files
-        )
-        
-        execution_time = (datetime.now() - start_time).total_seconds()
-        
-        # Get updated stats
-        from sqlalchemy import func
-        total_cves = db.query(func.count(CVE.id)).scalar() or 0
-        
-        return {
-            "success": True,
-            "message": f"CVE collection completed in {execution_time:.2f} seconds",
-            "method": "file_download" if use_files else "api_calls",
-            "days_processed": days_back,
-            "total_cves_in_db": total_cves,
-            "execution_time": execution_time
-        }
-        
-    except Exception as e:
-        logger.error(f"Manual CVE collection failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Collection failed: {str(e)}")
-    
+    request = CollectionRequest(days_back=days_back, use_files=use_files)
+    return await collect_cves_immediate(request, current_user, db)
+
+@router.get("/collection-stats")
+async def legacy_collection_stats(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Legacy endpoint - redirects to stats endpoint"""
+    logger.info("Legacy collection-stats endpoint called - redirecting to /stats")
+    return await get_cve_statistics(current_user, db)
+
 @router.get("/test-file-download")
-async def test_file_download(
-    year: int = None,
-    current_user: User = Depends(get_current_user)
-):
-    """Test CVE file download functionality"""
-    if current_user.role not in ["admin", "manager"]:
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
-    
-    try:
-        from app.services.cve_collector import CVECollector
-        
-        collector = CVECollector()
-        
-        # Use current year if not specified
-        if year is None:
-            year = datetime.now().year
-        
-        # Test download for specific year
-        file_path = await collector.download_cve_file(year, force_download=True)
-        
-        if file_path:
-            # Get file info
-            file_size = file_path.stat().st_size
-            return {
-                "success": True,
-                "message": f"Successfully downloaded CVE file for {year}",
-                "file_path": str(file_path),
-                "file_size_mb": round(file_size / (1024 * 1024), 2),
-                "year": year
-            }
-        else:
-            return {
-                "success": False,
-                "message": f"Failed to download CVE file for {year}",
-                "year": year
-            }
-            
-    except Exception as e:
-        logger.error(f"File download test failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Download test failed: {str(e)}")
-    
-async def test_file_download(
-    year: int = None,
-    current_user: User = Depends(get_current_user)
-):
-    """Test CVE file download functionality"""
-    if current_user.role not in ["admin", "manager"]:
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
-    
-    try:
-        from app.services.cve_collector import CVECollector
-        
-        collector = CVECollector()
-        
-        # Use current year if not specified
-        if year is None:
-            year = datetime.now().year
-        
-        # Test download for specific year
-        file_path = await collector.download_cve_file(year, force_download=True)
-        
-        if file_path:
-            # Get file info
-            file_size = file_path.stat().st_size
-            return {
-                "success": True,
-                "message": f"Successfully downloaded CVE file for {year}",
-                "file_path": str(file_path),
-                "file_size_mb": round(file_size / (1024 * 1024), 2),
-                "year": year
-            }
-        else:
-            return {
-                "success": False,
-                "message": f"Failed to download CVE file for {year}",
-                "year": year
-            }
-            
-    except Exception as e:
-        logger.error(f"File download test failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Download test failed: {str(e)}")
-
-@router.get("/{cve_id}", response_model=CVEResponse)
-async def get_cve(
-    cve_id: str,
-    include_asset_correlations: bool = True,
+async def legacy_test_download(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get specific CVE by ID with asset correlation data"""
-    cve = db.query(CVE).filter(CVE.cve_id == cve_id).first()
-    if not cve:
-        raise HTTPException(status_code=404, detail=f"CVE {cve_id} not found")
-    
-    if include_asset_correlations:
-        # Find assets that might be affected by this CVE
-        potentially_affected_assets = await find_affected_assets(db, cve)
-        cve.asset_correlations = potentially_affected_assets
-    
-    return cve
-
-@router.get("/{cve_id}/affected-assets")
-async def get_affected_assets(
-    cve_id: str,
-    confidence_threshold: float = 0.5,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get assets potentially affected by a specific CVE"""
-    cve = db.query(CVE).filter(CVE.cve_id == cve_id).first()
-    if not cve:
-        raise HTTPException(status_code=404, detail=f"CVE {cve_id} not found")
-    
-    try:
-        affected_assets = await find_affected_assets(db, cve, confidence_threshold)
-        
-        return {
-            "cve_id": cve_id,
-            "total_potentially_affected": len(affected_assets),
-            "high_confidence_matches": len([a for a in affected_assets if a["confidence_score"] >= 0.8]),
-            "affected_assets": affected_assets
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to find affected assets for {cve_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Asset correlation failed: {str(e)}")
-
-# Utility functions
-async def find_affected_assets(db: Session, cve: CVE, min_confidence: float = 0.5) -> List[Dict]:
-    """Find assets potentially affected by a CVE"""
-    affected_assets = []
-    
-    try:
-        # Extract potential product names from CVE description
-        description_lower = cve.description.lower()
-        
-        # Look for assets with matching services
-        assets = db.query(Asset).filter(
-            or_(
-                Asset.primary_service.isnot(None),
-                Asset.additional_services.isnot(None)
-            )
-        ).all()
-        
-        for asset in assets:
-            confidence = 0.0
-            matching_services = []
-            
-            # Check primary service
-            if asset.primary_service:
-                service_lower = asset.primary_service.lower()
-                if service_lower in description_lower or any(word in description_lower for word in service_lower.split()):
-                    confidence += 0.6
-                    matching_services.append(asset.primary_service)
-                
-                # Check vendor match
-                if asset.service_vendor and asset.service_vendor.lower() in description_lower:
-                    confidence += 0.3
-            
-            # Check additional services
-            if asset.additional_services:
-                for service in asset.additional_services:
-                    service_name = service.get('name', '').lower()
-                    if service_name and service_name in description_lower:
-                        confidence += 0.4
-                        matching_services.append(service.get('name'))
-            
-            # Check CPE correlation if available
-            if asset.cpe_name and cve.cpe_entries:
-                for cpe_entry in cve.cpe_entries:
-                    if asset.cpe_name in cpe_entry:
-                        confidence += 0.8
-                        break
-            
-            if confidence >= min_confidence:
-                affected_assets.append({
-                    "asset": {
-                        "id": asset.id,
-                        "name": asset.name,
-                        "asset_type": asset.asset_type,
-                        "ip_address": asset.ip_address,
-                        "hostname": asset.hostname,
-                        "primary_service": asset.primary_service,
-                        "service_vendor": asset.service_vendor,
-                        "service_version": asset.service_version,
-                        "environment": asset.environment,
-                        "criticality": asset.criticality,
-                        "location": asset.location,
-                        "owner_team": asset.owner_team
-                    },
-                    "confidence_score": min(confidence, 1.0),
-                    "matching_services": matching_services,
-                    "correlation_method": "service_name_match",
-                    "status": "potential"
-                })
-    
-    except Exception as e:
-        logger.error(f"Error in find_affected_assets: {e}")
-        return []
-    
-    # Sort by confidence score descending
-    affected_assets.sort(key=lambda x: x["confidence_score"], reverse=True)
-    return affected_assets
-
-async def correlate_cves_to_assets(db: Session, confidence_threshold: float = 0.7) -> Dict:
-    """Background task to correlate all CVEs with assets"""
-    stats = {
-        "total_cves": 0,
-        "cves_processed": 0,
-        "assets_analyzed": 0,
-        "correlations_found": 0,
-        "high_confidence_correlations": 0
-    }
-    
-    try:
-        # Get all CVEs
-        cves = db.query(CVE).all()
-        stats["total_cves"] = len(cves)
-        
-        # Get all assets with services
-        assets = db.query(Asset).filter(
-            or_(
-                Asset.primary_service.isnot(None),
-                Asset.additional_services.isnot(None)
-            )
-        ).all()
-        stats["assets_analyzed"] = len(assets)
-        
-        for cve in cves:
-            try:
-                affected_assets = await find_affected_assets(db, cve, 0.3)  # Lower threshold for background processing
-                
-                if affected_assets:
-                    stats["correlations_found"] += len(affected_assets)
-                    stats["high_confidence_correlations"] += len([a for a in affected_assets if a["confidence_score"] >= confidence_threshold])
-                    
-                    # Update CVE with correlation info
-                    cve.correlation_confidence = max(a["confidence_score"] for a in affected_assets)
-                    cve.affects_assets = [a["asset"]["id"] for a in affected_assets if a["confidence_score"] >= confidence_threshold]
-                
-                stats["cves_processed"] += 1
-                
-            except Exception as e:
-                logger.error(f"Error correlating CVE {cve.cve_id}: {e}")
-                continue
-        
-        db.commit()
-        
-    except Exception as e:
-        logger.error(f"Asset correlation task failed: {e}")
-        db.rollback()
-    
-    return stats
+    """Legacy endpoint - redirects to test collection"""
+    logger.info("Legacy test-file-download endpoint called - redirecting to /test-collection")
+    return await test_cve_collection(1, True, current_user, db)

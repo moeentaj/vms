@@ -1,4 +1,11 @@
-# Import all models to ensure they're registered with SQLAlchemy
+"""
+Cleaned Models Package - Asset-Based Architecture Only
+app/models/__init__.py
+
+Import only asset-based models, removing all service-based dependencies.
+"""
+
+# Core models for asset-based vulnerability management
 from .user import User
 from .cve import CVE
 from .asset import Asset
@@ -13,3 +20,8 @@ __all__ = [
     "AssignmentStatus",
     "AssignmentPriority"
 ]
+
+# Note: Removed service-based imports:
+# - ServiceCategory, ServiceType, ServiceInstance
+# - ProductMapping, CorrelationRule
+# - Any other service-related models
