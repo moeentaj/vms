@@ -1,6 +1,6 @@
-// EditAssetModal.js - Consistent with CreateAssetModal structure
+// Complete Fixed EditAssetModal.js - Properly structured with all sections
 import React, { useState, useEffect } from 'react';
-import { X, Search, Loader, Plus, Trash2, Loader2 } from 'lucide-react';
+import { X, Search, Loader, Plus, Trash2, Loader2, AlertTriangle, Database } from 'lucide-react';
 import { api } from '../../services/api';
 
 // Loading Modal Component
@@ -27,11 +27,11 @@ const ToastStack = ({ toasts, remove }) => (
     {toasts.map(toast => (
       <div
         key={toast.id}
-        className={`p-4 rounded-md shadow-md max-w-sm ${
-          toast.type === 'error' ? 'bg-red-100 text-red-800' :
+        className={`p-4 rounded-md shadow-md max-w-sm ${toast.type === 'error' ? 'bg-red-100 text-red-800' :
           toast.type === 'success' ? 'bg-green-100 text-green-800' :
-          'bg-blue-100 text-blue-800'
-        }`}
+            toast.type === 'warning' ? 'bg-yellow-100 text-yellow-800' :
+              'bg-blue-100 text-blue-800'
+          }`}
       >
         <div className="flex justify-between">
           <span className="text-sm">{toast.message}</span>
@@ -44,102 +44,192 @@ const ToastStack = ({ toasts, remove }) => (
   </div>
 );
 
-// CPE Lookup Inline Component - Exactly like CreateAssetModal
-const CpeLookupInline = ({ onSelect, buttonLabel = 'CPE Lookup', placeholder = "Search CPE (e.g., 'nginx', 'postgres', 'tomcat')" }) => {
+// CPE Data Status Component
+const CPEDataStatus = ({ onInitialize }) => (
+  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
+    <div className="flex items-center space-x-2">
+      <AlertTriangle className="h-5 w-5 text-yellow-600" />
+      <div className="flex-1">
+        <div className="text-sm font-medium text-yellow-800">CPE Database Not Available</div>
+        <div className="text-sm text-yellow-700">
+          CPE lookup requires database initialization. Asset editing will work without CPE lookup.
+        </div>
+      </div>
+      <button
+        onClick={onInitialize}
+        className="bg-yellow-600 text-white px-3 py-1 rounded text-sm hover:bg-yellow-700"
+      >
+        Initialize
+      </button>
+    </div>
+  </div>
+);
+
+// Fixed CPE Lookup Component with proper error handling and debouncing
+const CpeLookupInline = ({ 
+  onSelect, 
+  buttonLabel = 'CPE Lookup', 
+  placeholder = "Search CPE (e.g., 'nginx', 'postgres', 'tomcat')", 
+  onCPEError 
+}) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [cpeAvailable, setCpeAvailable] = useState(true);
+  const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
-    const t = setTimeout(async () => {
-      if (!open) return;
-      if (!query.trim()) {
+    // Debounce the search to prevent too many requests
+    const timeoutId = setTimeout(async () => {
+      if (!open || !query.trim()) {
         setResults([]);
         return;
       }
+
+      // Limit retry attempts to prevent infinite loops
+      if (retryCount > 3) {
+        setError('Too many failed attempts. Please try again later.');
+        return;
+      }
+
       setLoading(true);
       setError('');
+
       try {
-        const resp = await fetch('/api/v1/assets/cpe-lookup', {
+        const data = await api.request('/assets/cpe-lookup', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('token')}`
-          },
-          body: JSON.stringify({ query, limit: 12 })
+          body: JSON.stringify({ query: query.trim(), limit: 12 })
         });
-        if (!resp.ok) throw new Error('Lookup failed');
-        const data = await resp.json();
+        
         setResults(Array.isArray(data) ? data : []);
-      } catch (e) {
+        setCpeAvailable(true);
+        setRetryCount(0); // Reset retry count on success
+        if (onCPEError) onCPEError(null);
+        
+      } catch (error) {
+        console.error('CPE lookup error:', error);
         setResults([]);
-        setError('Search failed. Try again.');
+        
+        if (error.message.includes('CPE data not available') || 
+            error.message.includes('404') || 
+            error.message.includes('CPE lookup failed')) {
+          setCpeAvailable(false);
+          setError('CPE database not initialized');
+          if (onCPEError) onCPEError('CPE database not initialized');
+        } else if (error.message.includes('500')) {
+          setRetryCount(prev => prev + 1);
+          setError('CPE service temporarily unavailable. Please try again.');
+          if (onCPEError) onCPEError('CPE service temporarily unavailable');
+        } else {
+          setError('Search failed. Try again.');
+          if (onCPEError) onCPEError('Search failed');
+        }
       } finally {
         setLoading(false);
       }
-    }, 300);
-    return () => clearTimeout(t);
-  }, [query, open]);
+    }, 500); // Increased debounce delay to reduce API calls
+
+    return () => clearTimeout(timeoutId);
+  }, [query, open, onCPEError, retryCount]);
+
+  const handleLocalInitialize = async () => {
+    try {
+      await api.triggerCPEIngestion(true);
+      alert('CPE database initialization started. This may take a few minutes.');
+      setError('');
+      setCpeAvailable(true);
+      setRetryCount(0);
+      if (onCPEError) onCPEError(null);
+    } catch (err) {
+      console.error('CPE initialization error:', err);
+      setError('Failed to initialize CPE database');
+      if (onCPEError) onCPEError('Failed to initialize CPE database');
+    }
+  };
 
   return (
-    <div className="mt-2">
+    <div className="relative">
       <button
         type="button"
-        onClick={() => setOpen(o => !o)}
-        className="inline-flex items-center gap-2 bg-blue-100 text-blue-700 px-3 py-1.5 rounded-md hover:bg-blue-200"
+        onClick={() => setOpen(!open)}
+        className={`w-full px-3 py-2 border rounded-md text-left text-sm ${cpeAvailable
+          ? 'border-gray-300 hover:border-blue-500 focus:ring-2 focus:ring-blue-500'
+          : 'border-yellow-300 bg-yellow-50'
+          }`}
       >
-        <Search className="h-4 w-4" />
-        {open ? 'Close Lookup' : buttonLabel}
+        <div className="flex items-center justify-between">
+          <span className={cpeAvailable ? 'text-gray-700' : 'text-yellow-700'}>
+            {buttonLabel}
+          </span>
+          <div className="flex items-center space-x-1">
+            {!cpeAvailable && <AlertTriangle className="h-4 w-4 text-yellow-600" />}
+            <Search className="h-4 w-4 text-gray-400" />
+          </div>
+        </div>
       </button>
 
       {open && (
-        <div className="mt-2 p-3 bg-gray-50 rounded-md border border-gray-200">
-          <div className="relative">
-            <input
-              type="text"
-              placeholder={placeholder}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 pr-10"
-            />
-            <Search className="h-5 w-5 text-gray-400 absolute right-3 top-2.5" />
-          </div>
-
-          {loading && (
-            <div className="mt-2 text-sm text-gray-600 flex items-center gap-2">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Searching CPE database...
+        <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-300 rounded-md shadow-lg z-50 max-h-64 overflow-y-auto">
+          {!cpeAvailable ? (
+            <div className="p-4 text-center">
+              <AlertTriangle className="h-8 w-8 text-yellow-600 mx-auto mb-2" />
+              <div className="text-sm text-gray-600 mb-3">CPE database not available</div>
+              <button
+                onClick={handleLocalInitialize}
+                className="bg-blue-600 text-white px-3 py-1 rounded text-sm hover:bg-blue-700"
+              >
+                Initialize CPE Database
+              </button>
             </div>
-          )}
-
-          {error && !loading && (
-            <div className="mt-2 text-sm text-red-600">{error}</div>
-          )}
-
-          {results.length > 0 && !loading && (
-            <div className="mt-2 max-h-52 overflow-y-auto border border-gray-200 rounded-md divide-y">
-              {results.map((r, i) => (
-                <button
-                  type="button"
-                  key={`${r.cpe_name_id}-${i}`}
-                  onClick={() => { onSelect(r); setOpen(false); setQuery(''); setResults([]); }}
-                  className="w-full text-left p-3 hover:bg-gray-100"
-                >
-                  <div className="font-medium text-sm">
-                    {(r.vendor || '').trim()} {(r.product || '').trim()} {(r.version || '').trim()}
+          ) : (
+            <>
+              <div className="p-2 border-b">
+                <input
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={placeholder}
+                  className="w-full px-2 py-1 text-sm border border-gray-300 rounded"
+                  autoFocus
+                />
+              </div>
+              <div className="max-h-48 overflow-y-auto">
+                {loading && (
+                  <div className="p-3 text-center">
+                    <Loader className="animate-spin h-4 w-4 mx-auto" />
                   </div>
-                  <div className="text-xs text-gray-600 truncate">
-                    {r.title || r.description || r.cpe_name}
+                )}
+                {error && (
+                  <div className="p-3 text-center text-red-600 text-sm">{error}</div>
+                )}
+                {!loading && !error && results.length === 0 && query && (
+                  <div className="p-3 text-center text-gray-500 text-sm">
+                    No results found. Try broader search terms.
                   </div>
-                </button>
-              ))}
-            </div>
-          )}
-
-          {query && results.length === 0 && !loading && !error && (
-            <div className="mt-2 text-sm text-gray-600">No results found. Try broader search terms.</div>
+                )}
+                {results.map((r, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => {
+                      onSelect(r);
+                      setOpen(false);
+                      setQuery('');
+                    }}
+                    className="w-full px-3 py-2 text-left hover:bg-gray-100 border-b border-gray-100"
+                  >
+                    <div className="font-medium text-sm">
+                      {(r.vendor || '').trim()} {(r.product || '').trim()} {(r.version || '').trim()}
+                    </div>
+                    <div className="text-xs text-gray-600 truncate">
+                      {r.title || r.description || r.cpe_name}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </>
           )}
         </div>
       )}
@@ -148,43 +238,33 @@ const CpeLookupInline = ({ onSelect, buttonLabel = 'CPE Lookup', placeholder = "
 };
 
 /**
- * Edit Asset Modal - Consistent with CreateAssetModal structure
- * - Loads existing asset data and allows editing
- * - Unified services array with primary flag
- * - Per-service CPE lookup
- * - Optional OS CPE lookup
- * - Loading modal while updating the asset
- * - Toast notifications
+ * Edit Asset Modal - Complete version with proper structure
  */
 const EditAssetModal = ({ asset, onClose, onSuccess }) => {
-  // Base form - initialize with existing asset data
+  // Form state
   const [formData, setFormData] = useState({
     name: '',
     asset_type: 'server',
     ip_address: '',
     hostname: '',
-
-    // OS
     operating_system: '',
     os_version: '',
     os_cpe_name: '',
-
-    // Asset context
     environment: 'production',
     criticality: 'medium',
     location: '',
   });
 
-  // Services (unified) - initialize with existing data
+  // Services and tags
   const [services, setServices] = useState([]);
-
-  // Tags - initialize with existing data
   const [tags, setTags] = useState([]);
   const [tagInput, setTagInput] = useState('');
 
-  // Loading and toasts
+  // UI state
   const [submitting, setSubmitting] = useState(false);
   const [toasts, setToasts] = useState([]);
+  const [showCPEStatus, setShowCPEStatus] = useState(false);
+  const [cpeError, setCpeError] = useState(null);
 
   // Initialize form data when asset prop changes
   useEffect(() => {
@@ -203,12 +283,12 @@ const EditAssetModal = ({ asset, onClose, onSuccess }) => {
       });
 
       // Initialize services array
-      const initialServices = [];
-      
+      const servicesArray = [];
+
       // Add primary service if exists
-      if (asset.primary_service || asset.service_vendor || asset.service_version) {
-        initialServices.push({
-          name: asset.primary_service || '',
+      if (asset.primary_service) {
+        servicesArray.push({
+          name: asset.primary_service,
           vendor: asset.service_vendor || '',
           version: asset.service_version || '',
           ports: [],
@@ -222,7 +302,7 @@ const EditAssetModal = ({ asset, onClose, onSuccess }) => {
       // Add additional services if they exist
       if (asset.additional_services && Array.isArray(asset.additional_services)) {
         asset.additional_services.forEach(service => {
-          initialServices.push({
+          servicesArray.push({
             name: service.name || '',
             vendor: service.vendor || '',
             version: service.version || '',
@@ -235,9 +315,9 @@ const EditAssetModal = ({ asset, onClose, onSuccess }) => {
         });
       }
 
-      // Ensure at least one service entry
-      if (initialServices.length === 0) {
-        initialServices.push({
+      // Ensure at least one service exists
+      if (servicesArray.length === 0) {
+        servicesArray.push({
           name: '',
           vendor: '',
           version: '',
@@ -249,10 +329,12 @@ const EditAssetModal = ({ asset, onClose, onSuccess }) => {
         });
       }
 
-      setServices(initialServices);
+      setServices(servicesArray);
 
       // Initialize tags
-      setTags(asset.tags || []);
+      if (asset.tags && Array.isArray(asset.tags)) {
+        setTags(asset.tags);
+      }
     }
   }, [asset]);
 
@@ -260,11 +342,33 @@ const EditAssetModal = ({ asset, onClose, onSuccess }) => {
   const removeToast = (id) => {
     setToasts(prev => prev.filter(t => t.id !== id));
   };
-  
+
   const addToast = (message, type = 'info', ttlMs = 4000) => {
     const id = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     setToasts(prev => [...prev, { id, message, type }]);
     window.setTimeout(() => removeToast(id), ttlMs);
+  };
+
+  // Handle CPE errors from child components
+  const handleCPEError = (error) => {
+    setCpeError(error);
+    if (error) {
+      setShowCPEStatus(true);
+    }
+  };
+
+  // SINGLE CPE initialization handler
+  const initializeCPE = async () => {
+    try {
+      await api.triggerCPEIngestion(true);
+      addToast('CPE database initialization started. This may take a few minutes.', 'info');
+      setCpeError(null);
+      setShowCPEStatus(false);
+    } catch (err) {
+      console.error('CPE initialization error:', err);
+      addToast('Failed to initialize CPE database', 'error');
+      setCpeError('Failed to initialize CPE database');
+    }
   };
 
   // Form helpers
@@ -290,7 +394,6 @@ const EditAssetModal = ({ asset, onClose, onSuccess }) => {
     setServices(prev => {
       const next = [...prev];
       next.splice(index, 1);
-      // Ensure at least one primary remains
       if (!next.some(s => s.is_primary) && next.length > 0) {
         next[0].is_primary = true;
       }
@@ -319,7 +422,6 @@ const EditAssetModal = ({ asset, onClose, onSuccess }) => {
     e.preventDefault();
     if (submitting) return;
 
-    // Validation
     if (!formData.name.trim()) {
       addToast('Please provide an asset name.', 'error');
       return;
@@ -339,47 +441,34 @@ const EditAssetModal = ({ asset, onClose, onSuccess }) => {
         .map(({ is_primary, ...rest }) => rest);
 
       const payload = {
-        // Basic info
         name: formData.name,
         asset_type: formData.asset_type,
         ip_address: formData.ip_address || null,
         hostname: formData.hostname || null,
-
-        // Primary service mapped to top-level
         primary_service: primary.name || null,
         service_vendor: primary.vendor || null,
         service_version: primary.version || null,
         cpe_name_id: primary.cpe_name_id || null,
         cpe_name: primary.cpe_name || null,
-
-        // Additional services
         additional_services: additional_services.length ? additional_services : null,
-
-        // OS
         operating_system: formData.operating_system || null,
         os_version: formData.os_version || null,
         os_cpe_name: formData.os_cpe_name || null,
-
-        // Context
         environment: formData.environment || 'production',
         criticality: formData.criticality || 'medium',
         location: formData.location || null,
-
-        // Tags
         tags: tags.length ? tags : null,
       };
 
-      const response = await api.updateAsset(asset.id, payload);
-      
+      await api.updateAsset(asset.id, payload);
+
       addToast('Asset updated successfully!', 'success');
-      
       if (onSuccess) onSuccess();
-      onClose();
-      
+      setTimeout(onClose, 1000);
     } catch (err) {
       console.error('Update asset failed:', err);
       const msg = typeof err?.message === 'string' && err.message.trim()
-        ? err.message.trim().slice(0, 400)
+        ? err.message
         : 'Failed to update asset. Please try again.';
       addToast(msg, 'error');
     } finally {
@@ -392,117 +481,117 @@ const EditAssetModal = ({ asset, onClose, onSuccess }) => {
   }
 
   return (
-    <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
-      <LoadingModal open={submitting} title="Updating asset..." subtitle="Saving your changes to the asset." />
-      <ToastStack toasts={toasts} remove={removeToast} />
+    <div className="fixed inset-0 bg-gray-800 bg-opacity-75 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg max-w-4xl w-full m-4 max-h-[90vh] overflow-y-auto">
+        <div className="sticky top-0 bg-white border-b px-6 py-4 flex justify-between items-center">
+          <h2 className="text-xl font-semibold">Edit Asset: {asset?.name}</h2>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
+            <X className="h-6 w-6" />
+          </button>
+        </div>
 
-      <div className="bg-white rounded-lg p-6 w-full max-w-5xl max-h-[90vh] overflow-y-auto relative">
-        <button
-          type="button"
-          className="absolute top-4 right-4 text-gray-500 hover:text-gray-700"
-          onClick={onClose}
-        >
-          <X className="h-5 w-5" />
-        </button>
+        <form onSubmit={handleSubmit} className="p-6 space-y-6">
+          {/* CPE Status Warning */}
+          {(showCPEStatus || cpeError) && (
+            <CPEDataStatus onInitialize={initializeCPE} />
+          )}
 
-        <h2 className="text-xl font-semibold mb-4">Edit Asset: {asset.name}</h2>
-
-        <form onSubmit={handleSubmit} className="space-y-8">
-          {/* Basic Info */}
-          <section>
-            <h3 className="text-sm font-semibold text-gray-900 mb-3">Basic Info</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Asset Name</label>
-                <input
-                  type="text"
-                  value={formData.name}
-                  onChange={(e) => updateField('name', e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
-                  required
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Type</label>
-                <select
-                  value={formData.asset_type}
-                  onChange={(e) => updateField('asset_type', e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="server">Server</option>
-                  <option value="workstation">Workstation</option>
-                  <option value="network_device">Network Device</option>
-                  <option value="database">Database</option>
-                  <option value="application">Application</option>
-                  <option value="container">Container</option>
-                  <option value="iot_device">IoT Device</option>
-                  <option value="other">Other</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">IP Address</label>
-                <input
-                  type="text"
-                  value={formData.ip_address}
-                  onChange={(e) => updateField('ip_address', e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
-                  placeholder="e.g., 192.168.1.100"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Hostname</label>
-                <input
-                  type="text"
-                  value={formData.hostname}
-                  onChange={(e) => updateField('hostname', e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
-                  placeholder="e.g., web-server-01"
-                />
-              </div>
+          {/* Basic Information */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Asset Name *</label>
+              <input
+                type="text"
+                value={formData.name}
+                onChange={(e) => updateField('name', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+                required
+              />
             </div>
-          </section>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Asset Type</label>
+              <select
+                value={formData.asset_type}
+                onChange={(e) => updateField('asset_type', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="server">Server</option>
+                <option value="workstation">Workstation</option>
+                <option value="laptop">Laptop</option>
+                <option value="network_device">Network Device</option>
+                <option value="mobile_device">Mobile Device</option>
+                <option value="iot_device">IoT Device</option>
+                <option value="virtual_machine">Virtual Machine</option>
+                <option value="container">Container</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+          </div>
 
-          {/* Services */}
-          <section>
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-semibold text-gray-900">Services</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">IP Address</label>
+              <input
+                type="text"
+                value={formData.ip_address}
+                onChange={(e) => updateField('ip_address', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+                placeholder="e.g., 192.168.1.100"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Hostname</label>
+              <input
+                type="text"
+                value={formData.hostname}
+                onChange={(e) => updateField('hostname', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+                placeholder="e.g., web-server-01"
+              />
+            </div>
+          </div>
+
+          {/* Services Section */}
+          <div className="border-t pt-6">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-medium">Services</h3>
               <button
                 type="button"
                 onClick={addService}
-                className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700"
+                className="bg-blue-600 text-white px-3 py-1 rounded text-sm hover:bg-blue-700 flex items-center space-x-1"
               >
                 <Plus className="h-4 w-4" />
-                Add Service
+                <span>Add Service</span>
               </button>
             </div>
 
             {services.map((service, index) => (
-              <div key={index} className="border border-gray-200 rounded-md p-4 mb-4">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-3">
+              <div key={index} className="border border-gray-200 rounded-lg p-4 mb-4">
+                <div className="flex justify-between items-start mb-3">
+                  <div className="flex items-center space-x-2">
                     <input
                       type="radio"
-                      name="primaryService"
+                      name="primary_service"
                       checked={service.is_primary}
                       onChange={() => setPrimary(index)}
-                      className="h-4 w-4 text-blue-600"
+                      className="text-blue-600"
                     />
-                    <span className="text-sm font-medium">
+                    <label className="text-sm font-medium text-gray-700">
                       {service.is_primary ? 'Primary Service' : 'Additional Service'}
-                    </span>
+                    </label>
                   </div>
                   {services.length > 1 && (
                     <button
                       type="button"
                       onClick={() => removeService(index)}
-                      className="text-red-600 hover:text-red-700"
+                      className="text-red-600 hover:text-red-800"
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
                   )}
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-3">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Service Name</label>
                     <input
@@ -510,7 +599,7 @@ const EditAssetModal = ({ asset, onClose, onSuccess }) => {
                       value={service.name}
                       onChange={(e) => updateService(index, 'name', e.target.value)}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
-                      placeholder="e.g., Apache HTTP Server"
+                      placeholder="e.g., nginx, mysql, ssh"
                     />
                   </div>
                   <div>
@@ -520,7 +609,7 @@ const EditAssetModal = ({ asset, onClose, onSuccess }) => {
                       value={service.vendor}
                       onChange={(e) => updateService(index, 'vendor', e.target.value)}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
-                      placeholder="e.g., Apache Software Foundation"
+                      placeholder="e.g., nginx, oracle"
                     />
                   </div>
                   <div>
@@ -530,12 +619,12 @@ const EditAssetModal = ({ asset, onClose, onSuccess }) => {
                       value={service.version}
                       onChange={(e) => updateService(index, 'version', e.target.value)}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
-                      placeholder="e.g., 2.4.41"
+                      placeholder="e.g., 1.20.2, 8.0.33"
                     />
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Detection Method</label>
                     <select
@@ -565,8 +654,8 @@ const EditAssetModal = ({ asset, onClose, onSuccess }) => {
                   </div>
                 </div>
 
-                {/* CPE Lookup for this service - EXACTLY like CreateAssetModal */}
-                <div className="mt-2">
+                {/* CPE Lookup for this service */}
+                <div className="mt-3">
                   <CpeLookupInline
                     onSelect={(cpe) => {
                       updateService(index, 'cpe_name_id', cpe.cpe_name_id);
@@ -577,33 +666,22 @@ const EditAssetModal = ({ asset, onClose, onSuccess }) => {
                     }}
                     buttonLabel={`CPE Lookup for ${service.name || 'Service'}`}
                     placeholder={`Search CPE for ${service.name || 'service'}...`}
+                    onCPEError={handleCPEError}
                   />
                   {service.cpe_name && (
-                    <div className="mt-2">
-                      <div className="text-xs text-green-700 bg-green-50 p-2 rounded border border-green-200">
-                        <strong>Linked CPE:</strong> {service.cpe_name}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => { 
-                          updateService(index, 'cpe_name', ''); 
-                          updateService(index, 'cpe_name_id', ''); 
-                        }}
-                        className="mt-1 text-xs text-red-600 hover:underline"
-                      >
-                        Clear CPE link
-                      </button>
+                    <div className="mt-2 text-xs text-gray-600 bg-gray-50 px-2 py-1 rounded">
+                      Selected CPE: {service.cpe_name}
                     </div>
                   )}
                 </div>
               </div>
             ))}
-          </section>
+          </div>
 
           {/* Operating System */}
-          <section>
-            <h3 className="text-sm font-semibold text-gray-900 mb-3">Operating System</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-3">
+          <div className="border-t pt-6">
+            <h3 className="text-lg font-medium mb-4">Operating System</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Operating System</label>
                 <input
@@ -611,7 +689,7 @@ const EditAssetModal = ({ asset, onClose, onSuccess }) => {
                   value={formData.operating_system}
                   onChange={(e) => updateField('operating_system', e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
-                  placeholder="e.g., Ubuntu Linux"
+                  placeholder="e.g., Ubuntu, Windows Server, CentOS"
                 />
               </div>
               <div>
@@ -621,68 +699,34 @@ const EditAssetModal = ({ asset, onClose, onSuccess }) => {
                   value={formData.os_version}
                   onChange={(e) => updateField('os_version', e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
-                  placeholder="e.g., 20.04 LTS"
+                  placeholder="e.g., 20.04, 2019, 7.9"
                 />
               </div>
             </div>
 
             {/* OS CPE Lookup */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                OS CPE Lookup {formData.os_cpe_name && <span className="text-green-600">✓ Matched</span>}
-              </label>
+            <div className="mb-4">
               <CpeLookupInline
-
                 onSelect={(cpe) => {
                   updateField('os_cpe_name', cpe.cpe_name);
-                  if (!formData.operating_system && cpe.product) {
-                    updateField('operating_system', `${cpe.vendor} ${cpe.product}`.trim());
-                  }
-                  if (!formData.os_version && cpe.version) {
-                    updateField('os_version', cpe.version);
-                  }
+                  if (!formData.operating_system) updateField('operating_system', cpe.product || '');
+                  if (!formData.os_version && cpe.version) updateField('os_version', cpe.version || '');
                 }}
-                placeholder="Search for operating system CPE..."
+                buttonLabel="CPE Lookup for Operating System"
+                placeholder="Search OS CPE (e.g., 'ubuntu', 'windows', 'centos')..."
+                onCPEError={handleCPEError}
               />
               {formData.os_cpe_name && (
-                <div className="mt-1 text-xs text-gray-600 bg-gray-50 p-2 rounded">
-                  <strong>Matched OS CPE:</strong> {formData.os_cpe_name}
+                <div className="mt-2 text-xs text-gray-600 bg-gray-50 px-2 py-1 rounded">
+                  Selected OS CPE: {formData.os_cpe_name}
                 </div>
               )}
             </div>
-          </section>
+          </div>
 
-          {/* Tags */}
-          <section>
-            <h3 className="text-sm font-semibold text-gray-900 mb-2">Tags</h3>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                placeholder="Add a tag and press Enter"
-                value={tagInput}
-                onChange={(e) => setTagInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addTag(); } }}
-                className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
-              />
-              <button type="button" onClick={addTag} className="px-3 py-2 bg-gray-100 rounded hover:bg-gray-200">Add</button>
-            </div>
-            {tags.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-2">
-                {tags.map(t => (
-                  <span key={t} className="inline-flex items-center gap-2 text-sm bg-gray-100 px-2 py-1 rounded">
-                    {t}
-                    <button type="button" className="text-gray-500 hover:text-gray-700" onClick={() => removeTag(t)}>
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
-          </section>
-
-          {/* Environment */}
-          <section>
-            <h3 className="text-sm font-semibold text-gray-900 mb-2">Environment</h3>
+          {/* Environment and Context */}
+          <div className="border-t pt-6">
+            <h3 className="text-lg font-medium mb-4">Environment & Context</h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Environment</label>
@@ -695,6 +739,7 @@ const EditAssetModal = ({ asset, onClose, onSuccess }) => {
                   <option value="staging">Staging</option>
                   <option value="development">Development</option>
                   <option value="testing">Testing</option>
+                  <option value="qa">QA</option>
                 </select>
               </div>
               <div>
@@ -704,10 +749,10 @@ const EditAssetModal = ({ asset, onClose, onSuccess }) => {
                   onChange={(e) => updateField('criticality', e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
                 >
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
                   <option value="critical">Critical</option>
+                  <option value="high">High</option>
+                  <option value="medium">Medium</option>
+                  <option value="low">Low</option>
                 </select>
               </div>
               <div>
@@ -717,31 +762,81 @@ const EditAssetModal = ({ asset, onClose, onSuccess }) => {
                   value={formData.location}
                   onChange={(e) => updateField('location', e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
-                  placeholder="e.g., Data Center A, Rack 15"
+                  placeholder="e.g., Data Center 1, AWS us-east-1"
                 />
               </div>
             </div>
-          </section>
+          </div>
 
-          {/* Footer actions */}
-          <div className="flex items-center gap-3 pt-2">
-            <button
-              type="submit"
-              disabled={submitting}
-              className="flex-1 bg-blue-600 text-white py-3 px-4 rounded-md hover:bg-blue-700 disabled:opacity-50 font-medium"
-            >
-              {submitting ? 'Updating Asset...' : 'Update Asset'}
-            </button>
+          {/* Tags */}
+          <div className="border-t pt-6">
+            <h3 className="text-lg font-medium mb-4">Tags</h3>
+            <div className="flex flex-wrap gap-2 mb-3">
+              {tags.map((tag) => (
+                <span
+                  key={tag}
+                  className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm flex items-center space-x-1"
+                >
+                  <span>{tag}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeTag(tag)}
+                    className="text-blue-600 hover:text-blue-800"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+            <div className="flex space-x-2">
+              <input
+                type="text"
+                value={tagInput}
+                onChange={(e) => setTagInput(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && (e.preventDefault(), addTag())}
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+                placeholder="Add a tag..."
+              />
+              <button
+                type="button"
+                onClick={addTag}
+                className="bg-gray-600 text-white px-4 py-2 rounded-md hover:bg-gray-700"
+              >
+                Add
+              </button>
+            </div>
+          </div>
+
+          {/* Form Actions */}
+          <div className="border-t pt-6 flex justify-end space-x-3">
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 bg-gray-300 text-gray-700 py-3 px-4 rounded-md hover:bg-gray-400 font-medium"
+              className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
             >
               Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="bg-blue-600 text-white px-6 py-2 rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center space-x-2"
+            >
+              {submitting && <Loader2 className="animate-spin h-4 w-4" />}
+              <span>{submitting ? 'Updating...' : 'Update Asset'}</span>
             </button>
           </div>
         </form>
       </div>
+
+      {/* Loading Modal */}
+      <LoadingModal
+        open={submitting}
+        title="Updating Asset"
+        subtitle="Please wait while we update the asset..."
+      />
+
+      {/* Toast Notifications */}
+      <ToastStack toasts={toasts} remove={removeToast} />
     </div>
   );
 };
