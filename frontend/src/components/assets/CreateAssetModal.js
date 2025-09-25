@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Search, Plus, X, Loader2, Star } from 'lucide-react';
+import { api } from '../../services/api'; 
 
 /* -----------------------------------------------------------
  * Toasts (lightweight, no external lib)
@@ -76,98 +77,176 @@ const LoadingModal = ({ open, title = 'Working...', subtitle = 'Please wait whil
  *  - buttonLabel?: string
  *  - placeholder?: string
  */
-const CpeLookupInline = ({ onSelect, buttonLabel = 'CPE Lookup', placeholder = "Search CPE (e.g., 'nginx', 'postgres', 'tomcat')" }) => {
+const EnhancedCpeLookupInline = ({ 
+  onSelect, 
+  buttonLabel = 'CPE Lookup', 
+  placeholder = "Search CPE (e.g., 'windows 11', 'apache', 'mysql')",
+  onCPEError = null 
+}) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [suggestions, setSuggestions] = useState([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
 
+  // Enhanced search with suggestions
   useEffect(() => {
-    const t = setTimeout(async () => {
-      if (!open) return;
-      if (!query.trim()) {
-        setResults([]);
-        return;
-      }
+    if (!open || !query.trim()) {
+      setResults([]);
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+
+    const timeoutId = setTimeout(async () => {
       setLoading(true);
       setError('');
+
       try {
-        const resp = await fetch('/api/v1/assets/cpe-lookup', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('token')}`
-          },
-          body: JSON.stringify({ query, limit: 12 })
-        });
-        if (!resp.ok) throw new Error('Lookup failed');
-        const data = await resp.json();
-        setResults(Array.isArray(data) ? data : []);
-      } catch (e) {
+        // Load search suggestions
+        if (query.length >= 2) {
+          const suggestionResult = await api.getCPESearchSuggestions(query, 5);
+          setSuggestions(suggestionResult.suggestions || []);
+          setShowSuggestions(suggestionResult.suggestions?.length > 0);
+        }
+
+        // Perform enhanced search
+        if (query.length > 2) {
+          const data = await api.enhancedCPELookup(query, 12);
+          setResults(Array.isArray(data) ? data : []);
+          
+          console.log(`Enhanced CPE search: "${query}" found ${data.length} results`);
+          
+          if (onCPEError) onCPEError(null); // Clear any previous errors
+        }
+        
+      } catch (err) {
+        console.error('Enhanced CPE lookup error:', err);
         setResults([]);
         setError('Search failed. Try again.');
+        if (onCPEError) onCPEError(err.message);
       } finally {
         setLoading(false);
       }
     }, 300);
-    return () => clearTimeout(t);
-  }, [query, open]);
+
+    return () => clearTimeout(timeoutId);
+  }, [query, open, onCPEError]);
+
+  const selectSuggestion = (suggestion) => {
+    setQuery(suggestion);
+    setShowSuggestions(false);
+  };
 
   return (
-    <div className="mt-2">
+    <div className="relative">
       <button
         type="button"
-        onClick={() => setOpen(o => !o)}
+        onClick={() => setOpen(!open)}
         className="inline-flex items-center gap-2 bg-blue-100 text-blue-700 px-3 py-1.5 rounded-md hover:bg-blue-200"
       >
         <Search className="h-4 w-4" />
-        {open ? 'Close Lookup' : buttonLabel}
+        {open ? 'Close Enhanced Lookup' : buttonLabel}
       </button>
 
       {open && (
-        <div className="mt-2 p-3 bg-gray-50 rounded-md border border-gray-200">
-          <div className="relative">
+        <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-300 rounded-md shadow-lg z-50 max-h-80 overflow-hidden">
+          {/* Search Input */}
+          <div className="p-2 border-b relative">
             <input
               type="text"
-              placeholder={placeholder}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 pr-10"
+              placeholder={placeholder}
+              className="w-full px-2 py-1 text-sm border border-gray-300 rounded"
+              autoFocus
             />
-            <Search className="h-5 w-5 text-gray-400 absolute right-3 top-2.5" />
+            
+            {/* Search Suggestions Dropdown */}
+            {showSuggestions && suggestions.length > 0 && (
+              <div className="absolute top-full left-2 right-2 mt-1 bg-white border border-gray-200 rounded shadow-md z-60 max-h-32 overflow-y-auto">
+                {suggestions.map((suggestion, index) => (
+                  <button
+                    key={index}
+                    onClick={() => selectSuggestion(suggestion)}
+                    className="w-full text-left px-2 py-1 text-xs hover:bg-gray-50 border-b border-gray-100 last:border-b-0"
+                  >
+                    💡 {suggestion}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
-          {loading && (
-            <div className="mt-2 text-sm text-gray-600 flex items-center gap-2">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Searching CPE database...
-            </div>
-          )}
+          {/* Results */}
+          <div className="max-h-48 overflow-y-auto">
+            {loading && (
+              <div className="p-3 text-center">
+                <Loader2 className="animate-spin h-4 w-4 mx-auto" />
+                <div className="text-xs text-gray-500 mt-1">Enhanced search...</div>
+              </div>
+            )}
 
-          {error && !loading && (
-            <div className="mt-2 text-sm text-red-600">{error}</div>
-          )}
+            {error && (
+              <div className="p-3 text-center text-red-600 text-sm">{error}</div>
+            )}
 
-          {results.length > 0 && !loading && (
-            <div className="mt-2 max-h-52 overflow-y-auto border border-gray-200 rounded-md divide-y">
-              {results.map((r, i) => (
-                <button
-                  type="button"
-                  key={`${r.cpe_name_id}-${i}`}
-                  onClick={() => { onSelect(r); setOpen(false); setQuery(''); setResults([]); }}
-                  className="w-full text-left p-3 hover:bg-gray-100"
-                >
-                  <div className="font-medium text-sm">
-                    {(r.vendor || '').trim()} {(r.product || '').trim()} {(r.version || '').trim()}
+            {!loading && !error && results.length === 0 && query && (
+              <div className="p-3 text-center text-gray-500 text-sm">
+                No results found. Try "windows 11", "apache", or "mysql".
+              </div>
+            )}
+
+            {results.map((r, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => {
+                  onSelect(r);
+                  setOpen(false);
+                  setQuery('');
+                  setResults([]);
+                }}
+                className="w-full px-3 py-2 text-left hover:bg-gray-100 border-b border-gray-100 last:border-b-0"
+              >
+                <div className="flex items-start justify-between">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-sm text-gray-900">
+                      {(r.vendor || '').trim()} {(r.product || '').trim()}
+                      {r.version && r.version !== '*' && (
+                        <span className="ml-2 bg-blue-100 text-blue-800 px-1 py-0.5 rounded text-xs">
+                          v{r.version}
+                        </span>
+                      )}
+                    </div>
+                    
+                    {/* Enhanced metadata display */}
+                    {r.titles && r.titles.length > 0 && (
+                      <div className="text-xs text-gray-600 mt-1 truncate">
+                        {r.titles[0].title}
+                      </div>
+                    )}
+                    
+                    {r.categories && r.categories.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {r.categories.slice(0, 2).map((cat, catIndex) => (
+                          <span key={catIndex} className="bg-green-100 text-green-700 px-1 py-0.5 rounded text-xs">
+                            {cat.replace('_', ' ')}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    
+                    <div className="text-xs text-gray-500 mt-1 font-mono truncate">
+                      {r.cpe_name}
+                    </div>
                   </div>
-                  <div className="text-xs text-gray-600 truncate">
-                    {r.title || r.description || r.cpe_name}
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
+                </div>
+              </button>
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -471,7 +550,7 @@ const CreateAssetModal = ({ onClose, onSuccess }) => {
                       </button>
                     </div>
                   )}
-                  <CpeLookupInline
+                  <EnhancedCpeLookupInline
                     buttonLabel="OS CPE Lookup"
                     placeholder="Search OS CPE (e.g., 'windows 10', 'ubuntu 22.04')"
                     onSelect={(cpe) => {
@@ -573,7 +652,7 @@ const CreateAssetModal = ({ onClose, onSuccess }) => {
                   </div>
 
                   <div className="mt-2">
-                    <CpeLookupInline
+                    <EnhancedCpeLookupInline
                       onSelect={(cpe) => {
                         updateService(idx, 'cpe_name_id', cpe.cpe_name_id);
                         updateService(idx, 'cpe_name', cpe.cpe_name);

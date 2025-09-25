@@ -270,6 +270,95 @@ export const api = {
 
   // ===== CPE LOOKUP ENDPOINTS (Enhanced with proper error handling) =====
 
+  // Enhanced CPE methods (add to your existing api object)
+smartCPESearch: async function(query, options = {}) {
+  try {
+    // Try enhanced search first
+    const params = new URLSearchParams({
+      q: query,
+      limit: options.limit?.toString() || '20',
+      ...(options.vendor && { vendor: options.vendor }),
+      ...(options.category && { category: options.category }),
+      ...(options.include_deprecated && { include_deprecated: 'true' })
+    });
+    
+    return await this.request(`/cpe-lookup/search?${params.toString()}`);
+  } catch (error) {
+    console.warn('Enhanced CPE search failed, falling back:', error.message);
+    // Fallback to your existing method
+    return await this.searchCPE(query, options.limit || 20);
+  }
+},
+
+// Enhanced CPE lookup for your asset modals (replaces cpeLookup)
+enhancedCPELookup: async function(query, limit = 12) {
+  if (!query || !query.trim()) {
+    throw new Error('Query cannot be empty');
+  }
+  
+  if (query.length < 2) {
+    throw new Error('Query must be at least 2 characters long');
+  }
+  
+  try {
+    // Try enhanced search via /cpe-lookup/search
+    const result = await this.request(`/cpe-lookup/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+    return result.products || [];
+  } catch (error) {
+    console.warn('Enhanced CPE lookup failed, trying fallback:', error.message);
+    
+    // Fallback to your existing /assets/cpe-lookup endpoint
+    try {
+      return await this.request('/assets/cpe-lookup', {
+        method: 'POST',
+        body: JSON.stringify({ 
+          query: query.trim(), 
+          limit: Math.max(1, Math.min(limit, 50))
+        }),
+      });
+    } catch (fallbackError) {
+      throw new Error(`CPE lookup failed: ${fallbackError.message}`);
+    }
+  }
+},
+
+// Get search suggestions for autocomplete
+getCPESearchSuggestions: async function(partialQuery, limit = 10) {
+  if (!partialQuery || partialQuery.length < 2) {
+    return { suggestions: [], query: partialQuery };
+  }
+  
+  try {
+    const result = await this.request(`/cpe-lookup/suggestions?q=${encodeURIComponent(partialQuery)}&limit=${limit}`);
+    return result;
+  } catch (error) {
+    console.warn('CPE suggestions not available:', error.message);
+    
+    // Fallback: try enhanced search and extract suggestions
+    try {
+      const searchResult = await this.smartCPESearch(partialQuery, { limit: 5 });
+      const suggestions = searchResult.products?.map(p => `${p.vendor} ${p.product}`) || [];
+      return { suggestions: suggestions.slice(0, limit), query: partialQuery };
+    } catch (fallbackError) {
+      return { suggestions: [], query: partialQuery };
+    }
+  }
+},
+
+// Enhanced status check
+smartCPEStatus: async function() {
+  try {
+    const status = await this.getCPEStatus();
+    return {
+      ...status,
+      enhanced_features_available: true, // Will be true if enhanced backend is available
+    };
+  } catch (error) {
+    console.warn('CPE status check failed:', error.message);
+    return { has_data: false, enhanced_features_available: false };
+  }
+},
+
   // Enhanced CPE lookup with validation and error handling
   cpeLookup: async function(query, limit = 12) {
     if (!query || !query.trim()) {
