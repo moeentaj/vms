@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Database Cleanup Script - Remove Service-Based Tables
+Database Cleanup Script - Remove Service-Based Tables (FIXED)
 scripts/cleanup_service_tables.py
 
 This script removes all service-based tables and data, keeping only asset-based architecture.
@@ -20,8 +20,7 @@ sys.path.insert(0, str(project_root))
 
 from sqlalchemy import create_engine, text, MetaData, inspect
 from sqlalchemy.exc import SQLAlchemyError
-from app.core.database import get_db_url
-from app.core.config import settings
+from core.config import settings  # Fixed import
 import logging
 
 # Set up logging
@@ -53,10 +52,16 @@ COLUMNS_TO_REMOVE = {
 }
 
 def get_database_engine():
-    """Get database engine"""
+    """Get database engine using settings.DATABASE_URL"""
     try:
-        db_url = get_db_url()
+        # Fixed: Use settings.DATABASE_URL directly
+        db_url = settings.DATABASE_URL
         engine = create_engine(db_url)
+        
+        # Test connection
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        
         logger.info(f"Connected to database: {db_url.split('@')[-1]}")  # Hide credentials
         return engine
     except Exception as e:
@@ -90,107 +95,107 @@ def backup_reminder():
         print("❌ Cleanup cancelled.")
         sys.exit(1)
 
-def check_table_exists(engine, table_name: str) -> bool:
+def check_table_exists(engine, table_name):
     """Check if a table exists in the database"""
-    try:
-        inspector = inspect(engine)
-        tables = inspector.get_table_names()
-        return table_name in tables
-    except Exception as e:
-        logger.error(f"Error checking if table {table_name} exists: {e}")
-        return False
+    inspector = inspect(engine)
+    return table_name in inspector.get_table_names()
 
-def check_column_exists(engine, table_name: str, column_name: str) -> bool:
+def check_column_exists(engine, table_name, column_name):
     """Check if a column exists in a table"""
-    try:
-        inspector = inspect(engine)
-        if not check_table_exists(engine, table_name):
-            return False
-        
-        columns = inspector.get_columns(table_name)
-        column_names = [col['name'] for col in columns]
-        return column_name in column_names
-    except Exception as e:
-        logger.error(f"Error checking if column {table_name}.{column_name} exists: {e}")
+    if not check_table_exists(engine, table_name):
         return False
+    
+    inspector = inspect(engine)
+    columns = [col['name'] for col in inspector.get_columns(table_name)]
+    return column_name in columns
 
 def drop_service_tables(engine):
     """Drop service-related tables"""
-    logger.info("🗑️  Removing service-based tables...")
+    logger.info("🗑️  Dropping service tables...")
     
     dropped_tables = []
     skipped_tables = []
     
-    with engine.begin() as conn:
-        for table_name in SERVICE_TABLES_TO_REMOVE:
-            try:
+    try:
+        with engine.begin() as conn:
+            for table_name in SERVICE_TABLES_TO_REMOVE:
                 if check_table_exists(engine, table_name):
-                    # Drop foreign key constraints first (if any)
-                    logger.info(f"Dropping table: {table_name}")
-                    conn.execute(text(f"DROP TABLE IF EXISTS {table_name} CASCADE;"))
-                    dropped_tables.append(table_name)
-                    logger.info(f"✅ Dropped table: {table_name}")
+                    try:
+                        conn.execute(text(f"DROP TABLE IF EXISTS {table_name} CASCADE;"))
+                        dropped_tables.append(table_name)
+                        logger.info(f"✅ Dropped table: {table_name}")
+                    except SQLAlchemyError as e:
+                        logger.error(f"❌ Failed to drop table {table_name}: {e}")
                 else:
                     skipped_tables.append(table_name)
-                    logger.info(f"⏭️  Table {table_name} doesn't exist, skipping")
-                    
-            except SQLAlchemyError as e:
-                logger.error(f"❌ Failed to drop table {table_name}: {e}")
-    
-    logger.info(f"📊 Tables dropped: {len(dropped_tables)}, skipped: {len(skipped_tables)}")
-    if dropped_tables:
-        logger.info(f"Dropped tables: {', '.join(dropped_tables)}")
+                    logger.info(f"⏭️  Table does not exist: {table_name}")
+        
+        logger.info(f"📊 Summary: {len(dropped_tables)} tables dropped, {len(skipped_tables)} tables not found")
+        
+    except SQLAlchemyError as e:
+        logger.error(f"❌ Failed to drop service tables: {e}")
+        raise
 
 def remove_service_columns(engine):
     """Remove service-related columns from existing tables"""
-    logger.info("🗑️  Removing service-related columns...")
+    logger.info("🗑️  Removing service columns...")
     
     removed_columns = []
     skipped_columns = []
     
-    with engine.begin() as conn:
-        for table_name, columns in COLUMNS_TO_REMOVE.items():
-            if not check_table_exists(engine, table_name):
-                logger.info(f"⏭️  Table {table_name} doesn't exist, skipping column removal")
-                continue
-            
-            for column_name in columns:
-                try:
+    try:
+        with engine.begin() as conn:
+            for table_name, columns in COLUMNS_TO_REMOVE.items():
+                if not check_table_exists(engine, table_name):
+                    logger.info(f"⏭️  Table does not exist: {table_name}")
+                    continue
+                
+                for column_name in columns:
                     if check_column_exists(engine, table_name, column_name):
-                        logger.info(f"Dropping column: {table_name}.{column_name}")
-                        conn.execute(text(f"ALTER TABLE {table_name} DROP COLUMN IF EXISTS {column_name};"))
-                        removed_columns.append(f"{table_name}.{column_name}")
-                        logger.info(f"✅ Dropped column: {table_name}.{column_name}")
+                        try:
+                            conn.execute(text(f"ALTER TABLE {table_name} DROP COLUMN IF EXISTS {column_name};"))
+                            removed_columns.append(f"{table_name}.{column_name}")
+                            logger.info(f"✅ Removed column: {table_name}.{column_name}")
+                        except SQLAlchemyError as e:
+                            logger.error(f"❌ Failed to remove column {table_name}.{column_name}: {e}")
                     else:
                         skipped_columns.append(f"{table_name}.{column_name}")
-                        logger.info(f"⏭️  Column {table_name}.{column_name} doesn't exist, skipping")
-                        
-                except SQLAlchemyError as e:
-                    logger.error(f"❌ Failed to drop column {table_name}.{column_name}: {e}")
-    
-    logger.info(f"📊 Columns removed: {len(removed_columns)}, skipped: {len(skipped_columns)}")
-    if removed_columns:
-        logger.info(f"Removed columns: {', '.join(removed_columns)}")
+                        logger.info(f"⏭️  Column does not exist: {table_name}.{column_name}")
+        
+        logger.info(f"📊 Summary: {len(removed_columns)} columns removed, {len(skipped_columns)} columns not found")
+        
+    except SQLAlchemyError as e:
+        logger.error(f"❌ Failed to remove service columns: {e}")
+        raise
 
 def clean_asset_data(engine):
-    """Clean up asset data by removing service references"""
+    """Clean up any service references in asset data"""
     logger.info("🧹 Cleaning asset data...")
     
     try:
         with engine.begin() as conn:
-            # Remove any service-related data from assets table if columns exist
-            if check_column_exists(engine, 'assets', 'service_instance_id'):
-                conn.execute(text("UPDATE assets SET service_instance_id = NULL;"))
-                logger.info("✅ Cleared service_instance_id references from assets")
+            # Check if assets table exists
+            if not check_table_exists(engine, 'assets'):
+                logger.info("⏭️  Assets table does not exist")
+                return
             
-            # Clean up any JSON fields that might contain service references
-            if check_column_exists(engine, 'assets', 'metadata'):
+            # Clear any service-based tags
+            if check_column_exists(engine, 'assets', 'tags'):
                 conn.execute(text("""
                     UPDATE assets 
-                    SET metadata = metadata - 'service_mappings' - 'service_correlations'
-                    WHERE metadata IS NOT NULL;
+                    SET tags = REPLACE(tags, 'service:', '') 
+                    WHERE tags LIKE '%service:%';
                 """))
-                logger.info("✅ Cleaned service references from asset metadata")
+                logger.info("✅ Cleaned service tags from assets")
+            
+            # Reset any service-based detection methods
+            if check_column_exists(engine, 'assets', 'detection_method'):
+                conn.execute(text("""
+                    UPDATE assets 
+                    SET detection_method = 'manual' 
+                    WHERE detection_method LIKE '%service%';
+                """))
+                logger.info("✅ Reset service-based detection methods")
             
             logger.info("✅ Asset data cleanup completed")
             
@@ -198,11 +203,16 @@ def clean_asset_data(engine):
         logger.error(f"❌ Failed to clean asset data: {e}")
 
 def clean_cve_data(engine):
-    """Clean up CVE data by removing service correlations"""
+    """Clean up any service references in CVE data"""
     logger.info("🧹 Cleaning CVE data...")
     
     try:
         with engine.begin() as conn:
+            # Check if cves table exists
+            if not check_table_exists(engine, 'cves'):
+                logger.info("⏭️  CVEs table does not exist")
+                return
+            
             # Reset correlation confidence for asset-based recalculation
             if check_column_exists(engine, 'cves', 'correlation_confidence'):
                 conn.execute(text("UPDATE cves SET correlation_confidence = 0.0;"))
