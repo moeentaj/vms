@@ -1,215 +1,31 @@
-// Enhanced CPECVELookup.js with CPE database initialization
+// Update your existing frontend/src/components/cpe/CPECVELookup.js
+// Replace the CPE Lookup tab section with this enhanced version
+
 import React, { useState, useEffect } from 'react';
-import { Search, Shield, AlertTriangle, Info, Target, Database, ExternalLink, Loader, CheckCircle, XCircle, Eye, Download, RefreshCw, Clock } from 'lucide-react';
-import { api } from '../../services/api';
+import { Shield, XCircle, RefreshCw, Database, Search } from 'lucide-react';
+import api from '../../services/api';
+import CPEDatabaseStatus from './CPEDatabaseStatus';
+import EnhancedCPESearch from './EnhancedCPESearch';
+import CPESearchResults from './CPESearchResults';
 
-const SEVERITY_COLORS = {
-  CRITICAL: 'bg-red-100 text-red-800 border-red-200',
-  HIGH: 'bg-orange-100 text-orange-800 border-orange-200',
-  MEDIUM: 'bg-yellow-100 text-yellow-800 border-yellow-200',
-  LOW: 'bg-green-100 text-green-800 border-green-200',
-  UNKNOWN: 'bg-gray-100 text-gray-800 border-gray-200'
-};
-
-const CONFIDENCE_COLORS = {
-  high: 'bg-green-100 text-green-800',
-  medium: 'bg-yellow-100 text-yellow-800',
-  low: 'bg-red-100 text-red-800'
-};
-
-// CPE Database Status Component
-const CPEDatabaseStatus = ({ status, onRefresh, onInitialize, loading }) => {
-  const getStatusColor = () => {
-    if (!status) return 'gray';
-    if (status.has_data && status.total_products > 0) return 'green';
-    if (status.has_data && status.needs_refresh) return 'yellow';
-    return 'red';
-  };
-
-  const getStatusIcon = () => {
-    const color = getStatusColor();
-    if (loading) return <Loader className="h-5 w-5 animate-spin" />;
-    if (color === 'green') return <CheckCircle className="h-5 w-5 text-green-600" />;
-    if (color === 'yellow') return <AlertTriangle className="h-5 w-5 text-yellow-600" />;
-    return <XCircle className="h-5 w-5 text-red-600" />;
-  };
-
-  const getStatusMessage = () => {
-    if (loading) return 'Checking CPE database status...';
-    if (!status) return 'Unable to check CPE status';
-
-    if (status.has_data && status.total_products > 0) {
-      return `CPE database ready with ${status.total_products?.toLocaleString()} products`;
-    }
-
-    if (status.has_data && status.needs_refresh) {
-      return 'CPE database needs refresh';
-    }
-
-    return 'CPE database not initialized - required for lookups';
-  };
-
-  const canInitialize = () => {
-    return !loading && (!status?.has_data || status?.needs_refresh);
-  };
-
-  return (
-    <div className="bg-white rounded-lg shadow p-6 mb-6">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center space-x-3">
-          <Database className="h-6 w-6 text-blue-600" />
-          <h3 className="text-lg font-medium text-gray-900">CPE Database Status</h3>
-        </div>
-        <button
-          onClick={onRefresh}
-          disabled={loading}
-          className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
-        >
-          <RefreshCw className={`h-5 w-5 ${loading ? 'animate-spin' : ''}`} />
-        </button>
-      </div>
-
-      <div className="flex items-center justify-between">
-        <div className="flex items-center space-x-3">
-          {getStatusIcon()}
-          <div>
-            <div className="font-medium text-gray-900">Database Status</div>
-            <div className="text-sm text-gray-600">{getStatusMessage()}</div>
-          </div>
-        </div>
-
-        {canInitialize() && (
-          <button
-            onClick={onInitialize}
-            disabled={loading}
-            className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center space-x-2"
-          >
-            <Download className="h-4 w-4" />
-            <span>
-              {status?.has_data ? 'Refresh Database' : 'Initialize Database'}
-            </span>
-          </button>
-        )}
-      </div>
-
-      {/* Details */}
-      {status && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4 pt-4 border-t border-gray-200">
-          <div className="text-center">
-            <div className="text-sm text-gray-500">Total Products</div>
-            <div className="text-lg font-semibold text-gray-900">
-              {status.total_products?.toLocaleString() || '0'}
-            </div>
-          </div>
-
-          <div className="text-center">
-            <div className="text-sm text-gray-500">Cache Age</div>
-            <div className="text-lg font-semibold text-gray-900">
-              {status.cache_age_hours ? `${Math.round(status.cache_age_hours)}h` : 'N/A'}
-            </div>
-          </div>
-
-          <div className="text-center">
-            <div className="text-sm text-gray-500">Last Updated</div>
-            <div className="text-sm font-medium text-gray-900">
-              {status.last_refresh ? new Date(status.last_refresh).toLocaleDateString() : 'Never'}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-// Initialization Progress Component
-const InitializationProgress = ({ isInitializing, onClose }) => {
-  const [progress, setProgress] = useState(0);
-  const [status, setStatus] = useState('Starting initialization...');
-
-  useEffect(() => {
-    if (!isInitializing) return;
-
-    // Simulate progress updates
-    const interval = setInterval(() => {
-      setProgress(prev => {
-        if (prev >= 90) return prev;
-        const increment = Math.random() * 10;
-        return Math.min(prev + increment, 90);
-      });
-    }, 1000);
-
-    // Update status messages
-    const statusUpdates = [
-      'Downloading CPE data from NIST...',
-      'Processing CPE entries...',
-      'Building search index...',
-      'Finalizing database...'
-    ];
-
-    let statusIndex = 0;
-    const statusInterval = setInterval(() => {
-      if (statusIndex < statusUpdates.length - 1) {
-        setStatus(statusUpdates[statusIndex]);
-        statusIndex++;
-      }
-    }, 2000);
-
-    return () => {
-      clearInterval(interval);
-      clearInterval(statusInterval);
-    };
-  }, [isInitializing]);
-
-  if (!isInitializing) return null;
-
-  return (
-    <div className="fixed inset-0 bg-gray-800 bg-opacity-75 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
-        <div className="text-center">
-          <Database className="h-12 w-12 text-blue-600 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-gray-900 mb-2">Initializing CPE Database</h3>
-          <p className="text-sm text-gray-600 mb-6">{status}</p>
-
-          <div className="w-full bg-gray-200 rounded-full h-2 mb-4">
-            <div
-              className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-              style={{ width: `${progress}%` }}
-            ></div>
-          </div>
-
-          <p className="text-xs text-gray-500 mb-4">
-            This process may take 5-10 minutes. Please do not close this window.
-          </p>
-
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600"
-          >
-            Run in Background
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// Main CPE to CVE Lookup Component
 const CPECVELookup = () => {
   const [activeTab, setActiveTab] = useState('status');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-
-  // CPE Database Status
   const [cpeStatus, setCpeStatus] = useState(null);
   const [statusLoading, setStatusLoading] = useState(false);
-  const [isInitializing, setIsInitializing] = useState(false);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  // CPE Lookup State
+  // Enhanced search state
+  const [searchResults, setSearchResults] = useState(null);
+  const [selectedProduct, setSelectedProduct] = useState(null);
+  const [vulnerabilityData, setVulnerabilityData] = useState(null);
+
+  // Traditional CPE lookup state (for backward compatibility)
   const [cpeQuery, setCpeQuery] = useState('');
   const [cpeResults, setCpeResults] = useState(null);
   const [vulnerabilityMatches, setVulnerabilityMatches] = useState([]);
 
-  // Search State
+  // Vulnerability search state
   const [searchForm, setSearchForm] = useState({
     vendor: '',
     product: '',
@@ -217,76 +33,85 @@ const CPECVELookup = () => {
     severity: '',
     confidence_min: 0.7
   });
-  const [searchResults, setSearchResults] = useState(null);
 
-  // Check CPE status on component mount
   useEffect(() => {
     checkCPEStatus();
+
+    // Set up status polling
+    const statusInterval = setInterval(() => {
+      if (cpeStatus?.has_data) {
+        checkCPEStatus();
+      }
+    }, 300000); // Check every 5 minutes
+
+    return () => clearInterval(statusInterval);
   }, []);
 
   const checkCPEStatus = async () => {
     setStatusLoading(true);
-    setError('');
-
     try {
       const status = await api.getCPEStatus();
       setCpeStatus(status);
+      setError('');
     } catch (err) {
-      setError(`Error checking CPE status: ${err.message}`);
+      setError(`Failed to check CPE status: ${err.message}`);
     } finally {
       setStatusLoading(false);
     }
   };
 
-  const initializeCPEDatabase = async () => {
-    setIsInitializing(true);
+  const initializeCPEDatabase = async (forceRefresh = false) => {
+    setStatusLoading(true);
     setError('');
-
     try {
-      const result = await api.triggerCPEIngestion(true);
+      await api.initializeCPE(forceRefresh);
+      
+      setTimeout(() => {
+        checkCPEStatus();
+      }, 2000);
 
-      if (result.success) {
-        // Poll for completion
-        pollForCompletion();
-      } else {
-        setError('Failed to start CPE database initialization');
-        setIsInitializing(false);
-      }
+      setTimeout(() => {
+        if (!cpeStatus?.has_data) {
+          setError('Database initialization is taking longer than expected. Please check status manually.');
+        }
+      }, 600000);
     } catch (err) {
-      setError(`Error initializing CPE database: ${err.message}`);
-      setIsInitializing(false);
+      setError(`Failed to initialize CPE database: ${err.message}`);
+    } finally {
+      setStatusLoading(false);
     }
   };
 
-  const pollForCompletion = () => {
-    const pollInterval = setInterval(async () => {
-      try {
-        const status = await api.getCPEStatus();
-        setCpeStatus(status);
-
-        if (status.has_data && status.total_products > 0) {
-          // Initialization complete
-          setIsInitializing(false);
-          clearInterval(pollInterval);
-
-          // Auto-switch to CPE lookup tab
-          setActiveTab('cpe-lookup');
-        }
-      } catch (err) {
-        console.error('Error polling CPE status:', err);
-      }
-    }, 3000); // Poll every 3 seconds
-
-    // Stop polling after 10 minutes to avoid infinite polling
-    setTimeout(() => {
-      clearInterval(pollInterval);
-      if (isInitializing) {
-        setIsInitializing(false);
-        setError('Initialization took longer than expected. Please check status manually.');
-      }
-    }, 600000);
+  // Enhanced search handlers
+  const handleEnhancedSearchResults = (results) => {
+    setSearchResults(results);
+    setSelectedProduct(null);
+    setVulnerabilityData(null);
   };
 
+  const handleProductSelect = (product) => {
+    setSelectedProduct(product);
+    // Auto-navigate to traditional CPE lookup with the selected product
+    setCpeQuery(product.cpe_name);
+    setActiveTab('cpe-lookup');
+  };
+
+  const handleViewVulnerabilities = async (product) => {
+    setLoading(true);
+    try {
+      // Get vulnerability data for the selected product
+      const vulnerabilities = await api.request(`/cpe-cve-correlation/cpe/${encodeURIComponent(product.cpe_name)}/vulnerabilities`);
+      setVulnerabilityData(vulnerabilities);
+      setSelectedProduct(product);
+      setActiveTab('vulnerability-search');
+    } catch (err) {
+      setError(`Failed to get vulnerability data: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Traditional CPE lookup (existing functionality)
   const handleCPELookup = async () => {
     if (!cpeQuery.trim()) {
       setError('Please enter a CPE name');
@@ -302,11 +127,9 @@ const CPECVELookup = () => {
     setError('');
 
     try {
-      // Get vulnerability summary for the CPE
       const summary = await api.request(`/cpe-cve-correlation/cpe/${encodeURIComponent(cpeQuery)}/vulnerabilities`);
       setCpeResults(summary);
 
-      // Get detailed matches
       const matches = await api.request('/cpe-cve-correlation/correlate-cpe', {
         method: 'POST',
         body: JSON.stringify({
@@ -318,7 +141,6 @@ const CPECVELookup = () => {
       });
 
       setVulnerabilityMatches(matches);
-
     } catch (err) {
       setError(`Lookup failed: ${err.message}`);
       setCpeResults(null);
@@ -342,7 +164,6 @@ const CPECVELookup = () => {
 
       const results = await api.request('/cpe-cve-correlation/vulnerabilities/search?' + new URLSearchParams(params));
       setSearchResults(results);
-
     } catch (err) {
       setError(`Search failed: ${err.message}`);
       setSearchResults(null);
@@ -357,6 +178,14 @@ const CPECVELookup = () => {
   };
 
   const getSeverityBadge = (severity) => {
+    const SEVERITY_COLORS = {
+      CRITICAL: 'bg-red-100 text-red-800 border-red-200',
+      HIGH: 'bg-orange-100 text-orange-800 border-orange-200',
+      MEDIUM: 'bg-yellow-100 text-yellow-800 border-yellow-200',
+      LOW: 'bg-green-100 text-green-800 border-green-200',
+      UNKNOWN: 'bg-gray-100 text-gray-800 border-gray-200'
+    };
+    
     const colorClass = SEVERITY_COLORS[severity] || SEVERITY_COLORS.UNKNOWN;
     return (
       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${colorClass}`}>
@@ -370,8 +199,8 @@ const CPECVELookup = () => {
       <div className="flex items-center space-x-3">
         <Shield className="h-8 w-8 text-blue-600" />
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">CPE to CVE Correlation</h1>
-          <p className="text-gray-600">Search for vulnerabilities using Common Platform Enumeration identifiers</p>
+          <h1 className="text-2xl font-bold text-gray-900">CPE Vulnerability Search</h1>
+          <p className="text-gray-600">Search for software vulnerabilities using enhanced CPE lookup</p>
         </div>
       </div>
 
@@ -386,6 +215,16 @@ const CPECVELookup = () => {
               }`}
           >
             Database Status
+          </button>
+          <button
+            onClick={() => setActiveTab('enhanced-search')}
+            className={`py-2 px-1 border-b-2 font-medium text-sm ${activeTab === 'enhanced-search'
+                ? 'border-blue-500 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            disabled={!cpeStatus?.has_data}
+          >
+            Smart Search
           </button>
           <button
             onClick={() => setActiveTab('cpe-lookup')}
@@ -430,34 +269,50 @@ const CPECVELookup = () => {
             loading={statusLoading}
           />
 
-          {/* Instructions */}
-          <div className="bg-blue-50 rounded-lg p-6">
+          <div className="mt-6 bg-blue-50 rounded-lg p-6">
             <h3 className="font-medium text-blue-900 mb-2">Getting Started</h3>
             <div className="text-sm text-blue-800 space-y-2">
               <p>
-                The CPE (Common Platform Enumeration) database provides standardized names for
-                software products, operating systems, and hardware platforms from NIST.
+                The enhanced CPE search provides multiple ways to find software vulnerabilities:
               </p>
-              <p>
-                <strong>Before using CPE lookup:</strong> Initialize the database by clicking
-                "Initialize Database" above. This downloads the latest CPE data from NIST
-                (~5-10 minutes).
-              </p>
-              <p>
-                <strong>After initialization:</strong> Use the CPE Lookup and Vulnerability Search
-                tabs to find security vulnerabilities for specific software products.
+              <ul className="list-disc list-inside space-y-1 ml-4">
+                <li><strong>Smart Search:</strong> Use natural language to find software (recommended)</li>
+                <li><strong>CPE Lookup:</strong> Traditional CPE name lookup for exact matches</li>
+                <li><strong>Vulnerability Search:</strong> Search by software characteristics</li>
+              </ul>
+              <p className="mt-3">
+                <strong>Before using any search:</strong> Initialize the database by clicking
+                "Initialize Database" above.
               </p>
             </div>
           </div>
         </div>
       )}
 
-      {/* CPE Lookup Tab */}
+      {/* Enhanced Search Tab */}
+      {activeTab === 'enhanced-search' && (
+        <div className="space-y-6">
+          <EnhancedCPESearch
+            onResults={handleEnhancedSearchResults}
+            onSelect={handleProductSelect}
+            mode="smart"
+          />
+          
+          {searchResults && (
+            <CPESearchResults
+              results={searchResults}
+              onSelect={handleProductSelect}
+              onViewVulnerabilities={handleViewVulnerabilities}
+            />
+          )}
+        </div>
+      )}
+
+      {/* Traditional CPE Lookup Tab */}
       {activeTab === 'cpe-lookup' && (
         <div className="space-y-6">
-          {/* CPE Input */}
           <div className="bg-white rounded-lg shadow p-6">
-            <h3 className="text-lg font-semibold mb-4">Look up vulnerabilities for a CPE</h3>
+            <h3 className="text-lg font-semibold mb-4">Traditional CPE Lookup</h3>
             <div className="flex gap-4 items-end">
               <div className="flex-1">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -471,6 +326,11 @@ const CPECVELookup = () => {
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   onKeyDown={(e) => e.key === 'Enter' && handleCPELookup()}
                 />
+                {selectedProduct && (
+                  <p className="mt-2 text-sm text-green-600">
+                    ✓ Pre-filled from Smart Search: {selectedProduct.display_name}
+                  </p>
+                )}
               </div>
               <button
                 onClick={handleCPELookup}
@@ -478,75 +338,64 @@ const CPECVELookup = () => {
                 className="bg-blue-600 text-white px-6 py-2 rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
               >
                 {loading ? (
-                  <Loader className="h-4 w-4 animate-spin" />
+                  <>
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                    Searching...
+                  </>
                 ) : (
-                  <Search className="h-4 w-4" />
+                  <>
+                    <Search className="h-4 w-4" />
+                    Search CVEs
+                  </>
                 )}
-                Search
               </button>
             </div>
           </div>
 
-          {/* CPE Results */}
+          {/* CPE Results Display */}
           {cpeResults && (
             <div className="bg-white rounded-lg shadow p-6">
-              <h3 className="text-lg font-semibold mb-4">Vulnerability Summary</h3>
+              <h4 className="text-lg font-semibold mb-4">Vulnerability Summary</h4>
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-                <div className="text-center">
-                  <div className="text-2xl font-bold text-gray-900">{cpeResults.total_vulnerabilities || 0}</div>
-                  <div className="text-sm text-gray-600">Total CVEs</div>
-                </div>
-                <div className="text-center">
+                <div className="bg-red-50 p-4 rounded-lg">
                   <div className="text-2xl font-bold text-red-600">{cpeResults.critical_count || 0}</div>
-                  <div className="text-sm text-gray-600">Critical</div>
+                  <div className="text-sm text-red-600">Critical</div>
                 </div>
-                <div className="text-center">
+                <div className="bg-orange-50 p-4 rounded-lg">
                   <div className="text-2xl font-bold text-orange-600">{cpeResults.high_count || 0}</div>
-                  <div className="text-sm text-gray-600">High</div>
+                  <div className="text-sm text-orange-600">High</div>
                 </div>
-                <div className="text-center">
-                  <div className="text-2xl font-bold text-blue-600">{cpeResults.risk_score?.toFixed(1) || 'N/A'}</div>
-                  <div className="text-sm text-gray-600">Risk Score</div>
+                <div className="bg-yellow-50 p-4 rounded-lg">
+                  <div className="text-2xl font-bold text-yellow-600">{cpeResults.medium_count || 0}</div>
+                  <div className="text-sm text-yellow-600">Medium</div>
+                </div>
+                <div className="bg-green-50 p-4 rounded-lg">
+                  <div className="text-2xl font-bold text-green-600">{cpeResults.low_count || 0}</div>
+                  <div className="text-sm text-green-600">Low</div>
                 </div>
               </div>
 
-              {/* Detailed Vulnerability List */}
               {vulnerabilityMatches.length > 0 && (
                 <div>
-                  <h4 className="font-medium mb-4">Detailed Vulnerabilities</h4>
+                  <h5 className="font-medium text-gray-900 mb-3">Vulnerability Matches</h5>
                   <div className="space-y-3 max-h-96 overflow-y-auto">
-                    {vulnerabilityMatches.map((vuln, index) => (
+                    {vulnerabilityMatches.map((match, index) => (
                       <div key={index} className="border border-gray-200 rounded-lg p-4">
-                        <div className="flex justify-between items-start">
+                        <div className="flex items-start justify-between">
                           <div className="flex-1">
-                            <div className="flex items-center gap-3 mb-2">
-                              <h5 className="font-medium text-gray-900">{vuln.cve_id}</h5>
-                              {getSeverityBadge(vuln.severity)}
-                              {vuln.cvss_score && (
-                                <span className="text-sm text-gray-600">CVSS: {vuln.cvss_score}</span>
-                              )}
+                            <div className="flex items-center space-x-3">
+                              <h6 className="font-medium text-gray-900">{match.cve_id}</h6>
+                              {getSeverityBadge(match.severity)}
+                              <span className="text-sm text-gray-600">
+                                Score: {match.cvss_score || 'N/A'}
+                              </span>
                             </div>
-                            <p className="text-sm text-gray-600 mb-2">
-                              {vuln.description ? (vuln.description.length > 200 ?
-                                vuln.description.substring(0, 200) + '...' : vuln.description) : 'No description available'}
-                            </p>
-                            <div className="flex items-center gap-4 text-xs text-gray-500">
-                              <span>Published: {formatDate(vuln.published_date)}</span>
-                              {vuln.correlation_confidence && (
-                                <span>Confidence: {Math.round(vuln.correlation_confidence * 100)}%</span>
-                              )}
+                            <p className="text-sm text-gray-600 mt-1">{match.description}</p>
+                            <div className="mt-2 text-xs text-gray-500">
+                              Published: {formatDate(match.published_date)} • 
+                              Confidence: {Math.round((match.confidence_score || 0) * 100)}%
                             </div>
                           </div>
-
-                          <a
-                            href={`https://nvd.nist.gov/vuln/detail/${vuln.cve_id}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="p-1 text-gray-400 hover:text-gray-600 ml-4"
-                            title="View on NIST NVD"
-                          >
-                            <ExternalLink className="h-4 w-4" />
-                          </a>
                         </div>
                       </div>
                     ))}
@@ -561,10 +410,9 @@ const CPECVELookup = () => {
       {/* Vulnerability Search Tab */}
       {activeTab === 'vulnerability-search' && (
         <div className="space-y-6">
-          {/* Search Form */}
           <div className="bg-white rounded-lg shadow p-6">
-            <h3 className="text-lg font-semibold mb-4">Search vulnerabilities by software criteria</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
+            <h3 className="text-lg font-semibold mb-4">Search Vulnerabilities by Software Details</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Vendor</label>
                 <input
@@ -602,7 +450,7 @@ const CPECVELookup = () => {
                   onChange={(e) => setSearchForm(prev => ({ ...prev, severity: e.target.value }))}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
                 >
-                  <option value="">Any</option>
+                  <option value="">All Severities</option>
                   <option value="CRITICAL">Critical</option>
                   <option value="HIGH">High</option>
                   <option value="MEDIUM">Medium</option>
@@ -610,62 +458,66 @@ const CPECVELookup = () => {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Min Confidence</label>
-                <select
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Min Confidence ({Math.round(searchForm.confidence_min * 100)}%)
+                </label>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.1"
                   value={searchForm.confidence_min}
                   onChange={(e) => setSearchForm(prev => ({ ...prev, confidence_min: parseFloat(e.target.value) }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value={0.9}>90% (High)</option>
-                  <option value={0.7}>70% (Medium)</option>
-                  <option value={0.5}>50% (Low)</option>
-                </select>
+                  className="w-full"
+                />
               </div>
               <div className="flex items-end">
                 <button
                   onClick={handleVulnerabilitySearch}
                   disabled={loading || !cpeStatus?.has_data}
-                  className="w-full bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
+                  className="w-full bg-red-600 text-white px-4 py-2 rounded-md hover:bg-red-700 disabled:opacity-50"
                 >
-                  {loading ? (
-                    <Loader className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Search className="h-4 w-4" />
-                  )}
-                  Search
+                  Search Vulnerabilities
                 </button>
               </div>
             </div>
+
+            {selectedProduct && (
+              <div className="mt-4 p-3 bg-blue-50 rounded-md">
+                <p className="text-sm text-blue-800">
+                  ✓ Searching vulnerabilities for: <strong>{selectedProduct.display_name}</strong>
+                </p>
+              </div>
+            )}
           </div>
 
-          {/* Search Results */}
-          {searchResults && (
+          {/* Vulnerability Results */}
+          {vulnerabilityData && (
             <div className="bg-white rounded-lg shadow p-6">
-              <h3 className="text-lg font-semibold mb-4">
-                Search Results ({searchResults.total_count || 0} found)
-              </h3>
-
-              <div className="space-y-3 max-h-96 overflow-y-auto">
-                {searchResults.vulnerabilities?.length === 0 && (
-                  <div className="p-8 text-center">
-                    <Shield className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                    <h3 className="text-lg font-medium text-gray-900 mb-2">No vulnerabilities found</h3>
-                    <p className="text-gray-500">
-                      No CVEs match your search criteria. Try adjusting your search terms or lowering the confidence threshold.
-                    </p>
-                  </div>
-                )}
+              <h4 className="text-lg font-semibold mb-4">Vulnerability Results</h4>
+              {/* Display vulnerability data here */}
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div className="bg-red-50 p-4 rounded-lg">
+                  <div className="text-2xl font-bold text-red-600">{vulnerabilityData.critical_count || 0}</div>
+                  <div className="text-sm text-red-600">Critical</div>
+                </div>
+                <div className="bg-orange-50 p-4 rounded-lg">
+                  <div className="text-2xl font-bold text-orange-600">{vulnerabilityData.high_count || 0}</div>
+                  <div className="text-sm text-orange-600">High</div>
+                </div>
+                <div className="bg-yellow-50 p-4 rounded-lg">
+                  <div className="text-2xl font-bold text-yellow-600">{vulnerabilityData.medium_count || 0}</div>
+                  <div className="text-sm text-yellow-600">Medium</div>
+                </div>
+                <div className="bg-green-50 p-4 rounded-lg">
+                  <div className="text-2xl font-bold text-green-600">{vulnerabilityData.low_count || 0}</div>
+                  <div className="text-sm text-green-600">Low</div>
+                </div>
               </div>
             </div>
           )}
         </div>
       )}
-
-      {/* Initialization Progress Modal */}
-      <InitializationProgress
-        isInitializing={isInitializing}
-        onClose={() => setIsInitializing(false)}
-      />
     </div>
   );
 };

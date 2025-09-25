@@ -47,13 +47,25 @@ export const api = {
     const token = localStorage.getItem('token');
     const url = `${this.baseURL}${endpoint}`;
 
+    // Build headers safely
+    const defaultHeaders = {};
+    // Only set JSON content-type if the body is not FormData
+    const isFormData = options?.body instanceof FormData;
+    if (!isFormData) {
+      defaultHeaders['Content-Type'] = 'application/json';
+    }
+    if (token) {
+      defaultHeaders['Authorization'] = `Bearer ${token}`;
+    }
+
     const config = {
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token && { Authorization: `Bearer ${token}` }),
-        ...options.headers,
-      },
+      method: options.method || 'GET',
       ...options,
+      // headers: default + user headers, with user headers taking precedence
+      headers: {
+        ...defaultHeaders,
+        ...(options.headers || {}),
+      },
     };
 
     try {
@@ -844,8 +856,319 @@ export const api = {
 
   getServiceVulnerabilities: async function(serviceId) {
     return this.getAssetVulnerabilities(serviceId);
+  },
+
+  // ===== ENHANCED CPE SEARCH ENDPOINTS =====
+
+  // Enhanced CPE search with natural language processing
+  enhancedCPESearch: async function(searchRequest) {
+    return this.request('/cpe-lookup/enhanced-search', {
+      method: 'POST',
+      body: JSON.stringify(searchRequest),
+    });
+  },
+
+  // Get autocomplete suggestions for CPE search
+  getCPEAutocomplete: async function(query, limit = 10) {
+    const params = new URLSearchParams({ query, limit: limit.toString() });
+    return this.request(`/cpe-lookup/autocomplete?${params.toString()}`);
+  },
+
+  // Parse natural language query
+  parseNaturalLanguageQuery: async function(query) {
+    return this.request('/cpe-lookup/parse-query', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({ query }),
+    });
+  },
+
+  // Smart CPE lookup with different modes
+  smartCPELookup: async function(query, options = {}) {
+    const searchRequest = {
+      query,
+      search_mode: options.mode || 'smart',
+      max_results: options.limit || 20,
+      include_deprecated: options.includeDeprecated || false,
+      include_suggestions: options.includeSuggestions !== false,
+      confidence_threshold: options.confidenceThreshold || 0.3,
+      ...options
+    };
+    
+    return this.enhancedCPESearch(searchRequest);
+  },
+
+  // Get search suggestions for improving queries
+  getCPESearchSuggestions: async function(query, includePopular = true) {
+    try {
+      // Get both autocomplete and query parsing
+      const [autocomplete, parsed] = await Promise.all([
+        this.getCPEAutocomplete(query),
+        query.length > 2 ? this.parseNaturalLanguageQuery(query) : null
+      ]);
+
+      return {
+        autocomplete: autocomplete.suggestions,
+        popular_products: autocomplete.popular_products,
+        query_hints: autocomplete.query_hints,
+        parsed_query: parsed,
+        confidence: parsed?.confidence || 0
+      };
+    } catch (error) {
+      console.warn('Failed to get search suggestions:', error);
+      return {
+        autocomplete: [],
+        popular_products: [],
+        query_hints: [],
+        parsed_query: null,
+        confidence: 0
+      };
+    }
+  },
+
+  // Advanced CPE search with filters
+  advancedCPESearch: async function(filters) {
+    const searchRequest = {
+      query: filters.query || '',
+      search_mode: 'advanced',
+      vendor_filter: filters.vendor,
+      product_filter: filters.product,
+      version_filter: filters.version,
+      part_filter: filters.part,
+      max_results: filters.limit || 50,
+      include_deprecated: filters.includeDeprecated || false,
+      confidence_threshold: filters.confidenceThreshold || 0.3
+    };
+    
+    return this.enhancedCPESearch(searchRequest);
+  },
+
+  // Quick search for common software
+  quickCPESearch: async function(softwareName) {
+    const commonQueries = {
+      'apache': 'Apache HTTP Server',
+      'nginx': 'Nginx web server',
+      'mysql': 'MySQL database',
+      'postgresql': 'PostgreSQL database',
+      'mongodb': 'MongoDB database',
+      'redis': 'Redis server',
+      'docker': 'Docker container',
+      'windows': 'Microsoft Windows',
+      'linux': 'Linux operating system'
+    };
+
+    const query = commonQueries[softwareName.toLowerCase()] || softwareName;
+    return this.smartCPELookup(query, { mode: 'simple', limit: 10 });
+  },
+
+// ===== ENHANCED UI HELPER METHODS =====
+
+  // Get formatted search results for UI display
+  getFormattedCPEResults: async function(query, options = {}) {
+    try {
+      const results = await this.smartCPELookup(query, options);
+      
+      // Format results for easier UI consumption
+      const formattedResults = {
+        ...results,
+        products: results.products.map(product => ({
+          ...product,
+          display_name: this.formatCPEDisplayName(product),
+          risk_badge: this.getRiskBadgeInfo(product.security_risk_level),
+          category_icon: this.getCategoryIcon(product.category),
+          popularity_stars: Math.round(product.popularity_score * 5)
+        }))
+      };
+
+      return formattedResults;
+    } catch (error) {
+      console.error('Failed to get formatted CPE results:', error);
+      throw error;
+    }
+  },
+
+  // Helper to format CPE display names
+  formatCPEDisplayName: function(product) {
+    if (product.title) {
+      return product.title;
+    }
+    
+    // Create a readable name from vendor and product
+    const vendor = product.vendor.charAt(0).toUpperCase() + product.vendor.slice(1);
+    const productName = product.product.replace(/_/g, ' ')
+      .split(' ')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ');
+    
+    if (product.version && product.version !== '*') {
+      return `${vendor} ${productName} ${product.version}`;
+    }
+    
+    return `${vendor} ${productName}`;
+  },
+
+  // Helper to get risk badge information
+  getRiskBadgeInfo: function(riskLevel) {
+    const riskInfo = {
+      'low': { color: 'green', text: 'Low Risk', icon: '🟢' },
+      'medium': { color: 'yellow', text: 'Medium Risk', icon: '🟡' },
+      'high': { color: 'red', text: 'High Risk', icon: '🔴' },
+      'unknown': { color: 'gray', text: 'Unknown', icon: '⚫' }
+    };
+    
+    return riskInfo[riskLevel] || riskInfo.unknown;
+  },
+
+  // Helper to get category icons
+  getCategoryIcon: function(category) {
+    const categoryIcons = {
+      'Web Server': '🌐',
+      'Database': '🗄️',
+      'Operating System': '💻',
+      'Browser': '🌍',
+      'Development': '⚙️',
+      'Container': '📦',
+      'CMS': '📝',
+      'Framework': '🏗️',
+      'Other': '📋'
+    };
+    
+    return categoryIcons[category] || categoryIcons.Other;
+  },
+
+  // Real-time search with debouncing support
+  searchCPEWithDebounce: function(query, callback, delay = 300) {
+    // Clear existing timeout
+    if (this._searchTimeout) {
+      clearTimeout(this._searchTimeout);
+    }
+    
+    // Set new timeout
+    this._searchTimeout = setTimeout(async () => {
+      try {
+        if (query.length > 1) {
+          const results = await this.getFormattedCPEResults(query, {
+            mode: 'smart',
+            limit: 15,
+            includeSuggestions: true
+          });
+          callback(null, results);
+        } else {
+          callback(null, { products: [], suggestions: [] });
+        }
+      } catch (error) {
+        callback(error, null);
+      }
+    }, delay);
+  },
+
+  // Validate CPE search input
+  validateCPESearchInput: function(query) {
+    const validation = {
+      isValid: true,
+      warnings: [],
+      suggestions: []
+    };
+
+    if (!query || query.trim().length === 0) {
+      validation.isValid = false;
+      validation.warnings.push('Search query cannot be empty');
+      return validation;
+    }
+
+    if (query.trim().length < 2) {
+      validation.isValid = false;
+      validation.warnings.push('Search query must be at least 2 characters long');
+      return validation;
+    }
+
+    // Check for potential issues
+    if (query.length === 1) {
+      validation.suggestions.push('Try using more specific terms');
+    }
+
+    if (/^\d+\.\d+/.test(query)) {
+      validation.warnings.push('Searching by version only may yield limited results');
+      validation.suggestions.push('Try including the software name with the version');
+    }
+
+    if (query.includes('cpe:2.3:')) {
+      validation.suggestions.push('Use the regular CPE lookup for formatted CPE strings');
+    }
+
+    return validation;
+  },
+
+// ===== SEARCH ANALYTICS AND TRACKING =====
+
+  // Track search queries for analytics (if needed)
+  trackCPESearch: async function(query, results, searchMode = 'smart') {
+    try {
+      // Only track if analytics are enabled
+      if (this.analyticsEnabled) {
+        const searchData = {
+          query,
+          result_count: results.total_count,
+          search_mode: searchMode,
+          confidence: results.confidence_score,
+          timestamp: new Date().toISOString()
+        };
+        
+        // Store locally or send to analytics endpoint
+        localStorage.setItem('last_cpe_search', JSON.stringify(searchData));
+      }
+    } catch (error) {
+      console.warn('Failed to track search:', error);
+    }
+  },
+
+  // Get search history (from local storage)
+  getCPESearchHistory: function(limit = 10) {
+    try {
+      const history = JSON.parse(localStorage.getItem('cpe_search_history') || '[]');
+      return history.slice(0, limit);
+    } catch (error) {
+      console.warn('Failed to get search history:', error);
+      return [];
+    }
+  },
+
+  // Add to search history
+  addToCPESearchHistory: function(query, results) {
+    try {
+      const history = this.getCPESearchHistory();
+      const newEntry = {
+        query,
+        timestamp: new Date().toISOString(),
+        result_count: results.total_count,
+        confidence: results.confidence_score
+      };
+      
+      // Avoid duplicates
+      const filtered = history.filter(item => item.query !== query);
+      filtered.unshift(newEntry);
+      
+      // Keep only last 20 searches
+      const updated = filtered.slice(0, 20);
+      localStorage.setItem('cpe_search_history', JSON.stringify(updated));
+    } catch (error) {
+      console.warn('Failed to add to search history:', error);
+    }
+  },
+
+  // Clear search history
+  clearCPESearchHistory: function() {
+    try {
+      localStorage.removeItem('cpe_search_history');
+    } catch (error) {
+      console.warn('Failed to clear search history:', error);
+    }
   }
 };
+
+
 
 // Default export
 export default api;
