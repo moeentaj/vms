@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.api import auth, cves, assets, assignments, recommendations, cpe_cve_correlation
+from app.api import enhanced_cpe_lookup
 from app.api.cpe_lookup import router as cpe_lookup_router
 import logging
 
@@ -35,6 +36,7 @@ app.include_router(assignments.router, prefix="/api/v1/assignments", tags=["assi
 app.include_router(recommendations.router, prefix="/api/v1/recommendations", tags=["recommendations"])
 app.include_router(cpe_lookup_router, prefix="/api/v1/cpe-lookup", tags=["CPE Lookup"])
 app.include_router(cpe_cve_correlation.router, prefix="/api/v1/cpe-cve-correlation", tags=["cpe-cve-correlation"])
+app.include_router(enhanced_cpe_lookup.router, prefix="/api/v1/enhanced-cpe", tags=["Enhanced CPE"])
 
 @app.get("/")
 async def root():

@@ -464,6 +464,28 @@ class CPEDatabaseManager:
         
         return version_list
     
+    async def _cleanup_old_auto_categorized_data(self):
+        """
+        Clean up any old auto-categorized service data that might remain from previous implementations.
+        This is a compatibility method to prevent errors during CPE data ingestion.
+        """
+        try:
+            logger.info("Performing cleanup of old auto-categorized data...")
+            
+            # This method was used in a previous implementation to clean up 
+            # automatically categorized service data. Since you've moved away
+            # from that approach, this is now just a placeholder to prevent errors.
+            
+            # If you have any old service-related data that needs cleanup, 
+            # you can add those operations here. For now, we'll just log and continue.
+            
+            logger.info("Cleanup completed (no action needed in current implementation)")
+            
+        except Exception as e:
+            # Don't let cleanup failures stop the CPE ingestion
+            logger.warning(f"Cleanup method encountered an error (non-critical): {e}")
+            pass
+    
     async def run_full_ingestion(self) -> Dict[str, any]:
         """Run complete CPE ingestion process - LOOKUP ONLY (no auto-categorization)"""
         stats = {
@@ -512,7 +534,7 @@ class CPEDatabaseManager:
         
         return stats
     
-    # Add this to the CPEDatabaseManager class if missing:
+# Add this to the CPEDatabaseManager class if missing:
 def get_product_by_id(self, cpe_name_id: str) -> Optional[CPEProduct]:
     """Get a specific CPE product by its ID"""
     for product in self.cpe_products:
@@ -537,15 +559,304 @@ def get_vendors(self, query: Optional[str] = None, limit: int = 50) -> List[str]
     vendor_list.sort()
     return vendor_list[:limit]
 
+def _preprocess_search_query(self, query: str) -> str:
+    """
+    Preprocess and normalize search query for better matching
+    
+    Examples:
+    - "windows 11" -> handles OS version properly
+    - "apache 2.4" -> handles software version
+    - "mysql server" -> handles product variants
+    """
+    if not query:
+        return ""
+    
+    query = query.lower().strip()
+    
+    # Handle common OS version patterns
+    os_patterns = [
+        # Windows versions
+        (r'\bwindows\s+11\b', 'windows 11 microsoft'),
+        (r'\bwindows\s+10\b', 'windows 10 microsoft'),
+        (r'\bwin\s*11\b', 'windows 11 microsoft'),
+        (r'\bwin\s*10\b', 'windows 10 microsoft'),
+        (r'\bwindows\s+server\s+(\d{4})', r'windows server \1 microsoft'),
+        
+        # Linux distributions
+        (r'\bubuntu\s+(\d+\.?\d*)', r'ubuntu \1 canonical'),
+        (r'\bcentos\s+(\d+)', r'centos \1 centos'),
+        (r'\brhel\s+(\d+)', r'red hat enterprise linux \1'),
+        
+        # Common software patterns
+        (r'\bmysql\s+(\d+\.?\d*)', r'mysql \1 oracle'),
+        (r'\bapache\s+(\d+\.?\d*)', r'apache http server \1'),
+        (r'\bnginx\s+(\d+\.?\d*)', r'nginx \1'),
+        (r'\bpostgresql\s+(\d+\.?\d*)', r'postgresql \1'),
+    ]
+    
+    # Apply pattern replacements
+    for pattern, replacement in os_patterns:
+        query = re.sub(pattern, replacement, query)
+    
+    return query
+
+def _matches_filter(self, field_value: str, filter_value: str) -> bool:
+    """Check if field value matches filter (case-insensitive partial match)"""
+    if not field_value or not filter_value:
+        return True
+    return filter_value.lower() in field_value.lower()
+
+def _matches_search_query(self, product: 'CPEProduct', normalized_query: str, original_query: str) -> Dict:
+    """
+    Check if product matches search query with detailed scoring
+    
+    Returns:
+        Dict with 'matches' (bool), 'score' (float), and 'details' (dict)
+    """
+    
+    # Build comprehensive searchable text
+    searchable_fields = {
+        'vendor': product.vendor.lower(),
+        'product': product.product.lower(), 
+        'version': product.version.lower(),
+        'cpe_name': product.cpe_name.lower(),
+        'titles': self._get_english_titles(product).lower()
+    }
+    
+    # Combine all searchable text
+    all_searchable_text = ' '.join(searchable_fields.values())
+    
+    # Split query into individual terms
+    query_terms = normalized_query.split()
+    original_terms = original_query.lower().split()
+    all_terms = list(set(query_terms + original_terms))
+    
+    # Calculate match score
+    total_score = 0
+    match_details = {
+        'exact_matches': [],
+        'partial_matches': [],
+        'field_matches': {},
+        'version_match': False
+    }
+    
+    for term in all_terms:
+        if len(term) < 2:  # Skip very short terms
+            continue
+            
+        term_score = 0
+        
+        # Check each field for matches
+        for field_name, field_value in searchable_fields.items():
+            if term in field_value:
+                field_score = self._calculate_field_score(term, field_value, field_name)
+                term_score += field_score
+                match_details['field_matches'][field_name] = match_details['field_matches'].get(field_name, 0) + field_score
+                
+                if term == field_value.strip():  # Exact field match
+                    match_details['exact_matches'].append((field_name, term))
+                else:  # Partial field match
+                    match_details['partial_matches'].append((field_name, term))
+        
+        # Special handling for version numbers
+        if self._looks_like_version(term):
+            if self._version_matches(term, product.version):
+                term_score += 15  # Boost for version matches
+                match_details['version_match'] = True
+        
+        total_score += term_score
+    
+    # Apply relevance boosts
+    total_score += self._apply_relevance_boosts(product, match_details)
+    
+    # A product matches if it has any term matches
+    matches = total_score > 0
+    
+    return {
+        'matches': matches,
+        'score': total_score,
+        'details': match_details
+    }
+
+def _get_english_titles(self, product: 'CPEProduct') -> str:
+    """Extract English titles from product"""
+    titles = []
+    for title in product.titles:
+        if title.get('lang') == 'en' and title.get('title'):
+            titles.append(title['title'])
+    return ' '.join(titles)
+
+def _calculate_field_score(self, term: str, field_value: str, field_name: str) -> float:
+    """Calculate score for term match in specific field"""
+    
+    # Field importance weights
+    field_weights = {
+        'vendor': 12,
+        'product': 15,
+        'version': 8,
+        'cpe_name': 5,
+        'titles': 10
+    }
+    
+    base_weight = field_weights.get(field_name, 5)
+    
+    # Exact vs partial match scoring
+    if term == field_value.strip():
+        return base_weight * 2  # Exact match bonus
+    elif field_value.startswith(term):
+        return base_weight * 1.5  # Prefix match bonus  
+    elif term in field_value:
+        return base_weight  # Partial match
+    
+    return 0
+
+def _looks_like_version(self, term: str) -> bool:
+    """Check if term looks like a version number"""
+    version_patterns = [
+        r'^\d+$',                    # 11, 10
+        r'^\d+\.\d+$',              # 2.4, 11.0
+        r'^\d+\.\d+\.\d+$',         # 2.4.1
+        r'^\d+\.\d+\.\d+\.\d+$',    # 1.2.3.4
+        r'^\d{4}$',                 # 2019, 2022 (for Windows Server, etc.)
+        r'^\d+[hH]\d+$',            # 21H2, 22H2 (Windows versions)
+    ]
+    
+    return any(re.match(pattern, term) for pattern in version_patterns)
+
+def _version_matches(self, search_version: str, product_version: str) -> bool:
+    """Check if search version matches product version"""
+    if not search_version or not product_version or product_version == '*':
+        return False
+    
+    search_version = search_version.lower()
+    product_version = product_version.lower()
+    
+    # Direct match
+    if search_version == product_version:
+        return True
+    
+    # Version contained in product version
+    if search_version in product_version:
+        return True
+    
+    # Handle Windows version patterns
+    if search_version in ['11', '10'] and 'windows' in product_version:
+        # Look for Windows 11, Windows 10 patterns
+        windows_patterns = [
+            rf'\b{search_version}\b',           # Exact version boundary
+            rf'\b{search_version}\.0\b',        # Version.0 pattern
+            rf'windows.*{search_version}',      # Windows ... version
+        ]
+        return any(re.search(pattern, product_version) for pattern in windows_patterns)
+    
+    return False
+
+def _apply_relevance_boosts(self, product: 'CPEProduct', match_details: Dict) -> float:
+    """Apply additional relevance boosts based on product characteristics"""
+    boost = 0
+    
+    # Boost for non-deprecated products
+    if not product.deprecated:
+        boost += 5
+    
+    # Boost for recently updated products
+    if product.last_modified:
+        days_since_update = (datetime.now() - product.last_modified).days
+        if days_since_update < 365:
+            boost += 3
+        elif days_since_update < 730:
+            boost += 1
+    
+    # Boost for exact field matches
+    boost += len(match_details.get('exact_matches', [])) * 5
+    
+    # Boost for version matches
+    if match_details.get('version_match'):
+        boost += 8
+    
+    # Boost for multiple field matches (indicates comprehensive match)
+    field_match_count = len([f for f, score in match_details.get('field_matches', {}).items() if score > 0])
+    if field_match_count >= 3:
+        boost += 10
+    elif field_match_count >= 2:
+        boost += 5
+    
+    return boost
+
+# Additional helper method to add to the CPEDatabaseManager class
+def debug_search_query(self, query: str, limit: int = 5) -> Dict:
+    """
+    Debug search functionality by showing detailed matching process
+    Useful for troubleshooting why searches don't return expected results
+    """
+    logger.info(f"=== DEBUG SEARCH: '{query}' ===")
+    
+    if not self.cpe_products:
+        return {"error": "No CPE products loaded"}
+    
+    normalized_query = self._preprocess_search_query(query.strip())
+    logger.info(f"Normalized query: '{normalized_query}'")
+    
+    debug_results = []
+    
+    # Test with first few products for debugging
+    sample_products = self.cpe_products[:100]  # Test with sample
+    
+    for product in sample_products:
+        if product.deprecated:
+            continue
+            
+        match_result = self._matches_search_query(product, normalized_query, query)
+        
+        if match_result['matches']:
+            debug_info = {
+                'cpe_name': product.cpe_name,
+                'vendor': product.vendor,
+                'product': product.product,
+                'version': product.version,
+                'score': match_result['score'],
+                'match_details': match_result['details']
+            }
+            debug_results.append(debug_info)
+    
+    # Sort by score
+    debug_results.sort(key=lambda x: x['score'], reverse=True)
+    
+    result = {
+        'query': query,
+        'normalized_query': normalized_query,
+        'total_matches': len(debug_results),
+        'top_matches': debug_results[:limit],
+        'sample_size': len(sample_products)
+    }
+    
+    logger.info(f"Debug results: {result}")
+    return result
+
 def search_products(self, query: str, vendor_filter: Optional[str] = None, 
                    product_filter: Optional[str] = None, version_filter: Optional[str] = None,
                    include_deprecated: bool = False, limit: int = 50, 
                    offset: int = 0) -> Tuple[List[CPEProduct], int]:
-    """Search CPE products with filters"""
+    """
+    Enhanced search CPE products with better matching logic
+    
+    FIXES:
+    1. Improved query preprocessing (handles "windows 11", "apache 2.4", etc.)
+    2. Better searchable text construction
+    3. Multi-word query handling
+    4. Fuzzy version matching
+    5. Smart OS version detection
+    """
     if not self.cpe_products:
         return [], 0
     
-    query_lower = query.lower().strip()
+    # Preprocess and normalize query
+    query_normalized = self._preprocess_search_query(query.strip())
+    if not query_normalized:
+        return [], 0
+        
+    logger.info(f"Searching CPE products: '{query}' -> normalized: '{query_normalized}'")
+    
     results = []
     
     for product in self.cpe_products:
@@ -553,27 +864,35 @@ def search_products(self, query: str, vendor_filter: Optional[str] = None,
         if product.deprecated and not include_deprecated:
             continue
         
-        # Apply filters
-        if vendor_filter and vendor_filter.lower() not in product.vendor.lower():
+        # Apply vendor filter
+        if vendor_filter and not self._matches_filter(product.vendor, vendor_filter):
             continue
         
-        if product_filter and product_filter.lower() not in product.product.lower():
+        # Apply product filter  
+        if product_filter and not self._matches_filter(product.product, product_filter):
             continue
         
-        if version_filter and version_filter.lower() not in product.version.lower():
+        # Apply version filter
+        if version_filter and not self._matches_filter(product.version, version_filter):
             continue
         
-        # Search in relevant fields
-        searchable_text = ' '.join([
-            product.vendor,
-            product.product,
-            product.version,
-            product.cpe_name,
-            ' '.join([title.get('title', '') for title in product.titles if title.get('lang') == 'en'])
-        ]).lower()
-        
-        if query_lower in searchable_text:
+        # Check if product matches the search query
+        match_result = self._matches_search_query(product, query_normalized, query)
+        if match_result['matches']:
+            # Add match score to product for sorting
+            product._search_score = match_result['score']
+            product._match_details = match_result['details']
             results.append(product)
+    
+    logger.info(f"Found {len(results)} products matching search criteria")
+    
+    # Sort by relevance score (highest first)
+    results.sort(key=lambda p: getattr(p, '_search_score', 0), reverse=True)
+    
+    total_count = len(results)
+    paginated_results = results[offset:offset + limit]
+    
+    return paginated_results, total_count
     
     # Sort by relevance (exact matches first, then partial matches)
     def relevance_score(product):
