@@ -95,6 +95,9 @@ class EnhancedCPEDatabaseManager:
             # Cache the results
             await self._cache_products()
             
+            # 🆕 NEW: Enhance metadata after basic ingestion
+            await self.enhance_metadata_after_ingestion()
+            
             # Convert sets to lists for JSON serialization
             stats['categories_found'] = list(stats['categories_found'])
             stats['vendors_found'] = list(stats['vendors_found'])
@@ -399,6 +402,37 @@ class EnhancedCPEDatabaseManager:
                     if keyword not in self._keyword_index:
                         self._keyword_index[keyword] = []
                     self._keyword_index[keyword].append(product)
+                    
+    def enhance_existing_cpe_data(cpe_manager_instance):
+        """
+        Method to add to your existing EnhancedCPEDatabaseManager class
+        Call this after loading CPE data to enhance it with rich metadata
+        """
+        if not hasattr(cpe_manager_instance, 'cpe_products') or not cpe_manager_instance.cpe_products:
+            logger.warning("No CPE products to enhance")
+            return
+        
+        enhancer = CPEMetadataEnhancer()
+        enhanced_count = 0
+        
+        logger.info(f"Enhancing metadata for {len(cpe_manager_instance.cpe_products)} CPE products...")
+        
+        for product in cpe_manager_instance.cpe_products:
+            try:
+                enhancer.enhance_cpe_product_metadata(product)
+                enhanced_count += 1
+                
+                if enhanced_count % 1000 == 0:
+                    logger.info(f"Enhanced {enhanced_count} products...")
+                    
+            except Exception as e:
+                logger.warning(f"Failed to enhance product {product.cpe_name}: {e}")
+        
+        logger.info(f"Metadata enhancement completed: {enhanced_count}/{len(cpe_manager_instance.cpe_products)} products enhanced")
+        
+        # Rebuild search indices with enhanced data
+        if hasattr(cpe_manager_instance, '_build_search_indices'):
+            cpe_manager_instance._build_search_indices()
     
     async def _cache_products(self):
         """Cache processed products to disk"""
@@ -825,3 +859,284 @@ class EnhancedCPEDatabaseManager:
             'top_matches': debug_results[:limit],
             'sample_size': len(sample_products)
         }
+        
+class CPEMetadataEnhancer:
+    """
+    Metadata enhancement utility that works with existing CPEProduct objects
+    Adds rich metadata without changing core structure
+    """
+    
+    def __init__(self):
+        self.vendor_kb = self._build_vendor_knowledge_base()
+        self.product_patterns = self._build_product_patterns()
+        self.category_rules = self._build_category_mapping()
+        self.keyword_extractors = self._build_keyword_extractors()
+    
+    def _build_vendor_knowledge_base(self) -> Dict[str, Dict]:
+        """Knowledge base for vendor normalization and aliases"""
+        return {
+            'microsoft': {
+                'canonical': 'Microsoft',
+                'aliases': {'microsoft', 'ms', 'msft'},
+                'boost': 2.0,
+                'categories': ['operating_system', 'productivity', 'database']
+            },
+            'apache': {
+                'canonical': 'Apache Software Foundation',
+                'aliases': {'apache', 'asf'},
+                'boost': 1.8,
+                'categories': ['web_server', 'application_server', 'big_data']
+            },
+            'oracle': {
+                'canonical': 'Oracle Corporation',
+                'aliases': {'oracle', 'sun_microsystems', 'sun'},
+                'boost': 1.9,
+                'categories': ['database', 'middleware', 'operating_system']
+            },
+            'google': {
+                'canonical': 'Google LLC',
+                'aliases': {'google', 'alphabet'},
+                'boost': 1.9,
+                'categories': ['browser', 'mobile_os', 'development_tools']
+            },
+            'mozilla': {
+                'canonical': 'Mozilla Foundation',
+                'aliases': {'mozilla'},
+                'boost': 1.5,
+                'categories': ['browser', 'email_client']
+            }
+        }
+    
+    def _build_product_patterns(self) -> Dict[str, List[str]]:
+        """Product categorization patterns"""
+        return {
+            'web_servers': [
+                r'apache.*http.*server', r'nginx', r'iis', r'lighttpd',
+                r'httpd', r'weblogic', r'websphere', r'tomcat'
+            ],
+            'databases': [
+                r'mysql', r'postgresql', r'oracle.*database', r'sql.*server',
+                r'mongodb', r'redis', r'cassandra', r'elasticsearch',
+                r'.*sql.*', r'.*db.*'
+            ],
+            'operating_systems': [
+                r'windows.*server', r'ubuntu', r'centos', r'rhel', r'debian',
+                r'linux', r'macos', r'android', r'ios'
+            ],
+            'browsers': [
+                r'chrome', r'firefox', r'safari', r'edge', r'internet.*explorer'
+            ],
+            'development_tools': [
+                r'git', r'jenkins', r'maven', r'gradle', r'npm', r'yarn'
+            ],
+            'security_tools': [
+                r'openssl', r'wireshark', r'nmap', r'metasploit'
+            ]
+        }
+    
+    def _build_category_mapping(self) -> Dict[str, float]:
+        """Category importance weights"""
+        return {
+            'web_server': 1.0,
+            'database': 1.0,
+            'operating_system': 1.0,
+            'browser': 0.9,
+            'development_tools': 0.8,
+            'security_tools': 0.7,
+            'application_server': 0.8,
+            'middleware': 0.7
+        }
+    
+    def _build_keyword_extractors(self) -> Dict[str, List[str]]:
+        """Technology keyword extractors"""
+        return {
+            'java': ['java', 'jvm', 'tomcat', 'spring', 'maven', 'gradle'],
+            'python': ['python', 'django', 'flask', 'pip'],
+            'nodejs': ['node', 'nodejs', 'npm', 'yarn'],
+            'php': ['php', 'composer', 'laravel'],
+            'dotnet': ['dotnet', '.net', 'asp.net', 'c#'],
+            'ruby': ['ruby', 'rails', 'gem'],
+            'go': ['golang', 'go'],
+            'rust': ['rust', 'cargo']
+        }
+    
+    def enhance_cpe_product_metadata(self, cpe_product) -> None:
+        """
+        Enhance a single CPEProduct with rich metadata
+        Modifies the product in-place
+        """
+        try:
+            # Extract enhanced keywords
+            enhanced_keywords = self._extract_enhanced_keywords(cpe_product)
+            cpe_product.keywords.update(enhanced_keywords)
+            
+            # Add vendor aliases
+            vendor_aliases = self._get_vendor_aliases(cpe_product.vendor)
+            cpe_product.vendor_aliases.update(vendor_aliases)
+            
+            # Add product alternatives
+            alternatives = self._extract_product_alternatives(cpe_product)
+            cpe_product.alternative_names.update(alternatives)
+            
+            # Categorize product
+            categories = self._categorize_product(cpe_product)
+            cpe_product.categories.update(categories)
+            
+            # Boost popularity score based on vendor and category
+            boost = self._calculate_popularity_boost(cpe_product)
+            cpe_product.popularity_score = cpe_product.popularity_score + boost
+            
+            # Rebuild searchable text with enhanced data
+            self._rebuild_searchable_text(cpe_product)
+            
+        except Exception as e:
+            logger.warning(f"Failed to enhance metadata for {cpe_product.cpe_name}: {e}")
+    
+    def _extract_enhanced_keywords(self, cpe_product) -> Set[str]:
+        """Extract additional keywords from all available data"""
+        keywords = set()
+        
+        # From CPE components
+        for component in [cpe_product.vendor, cpe_product.product]:
+            if component and component != '*':
+                # Split on common separators
+                words = re.findall(r'[a-zA-Z0-9]{3,}', component)
+                keywords.update(word.lower() for word in words)
+        
+        # From titles
+        for title in cpe_product.titles:
+            if hasattr(title, 'title'):
+                title_text = title.title
+            else:
+                title_text = title.get('title', '') if isinstance(title, dict) else str(title)
+            
+            words = re.findall(r'[a-zA-Z0-9]{3,}', title_text)
+            keywords.update(word.lower() for word in words if len(word) > 2)
+        
+        # Technology-specific keywords
+        product_lower = cpe_product.product.lower()
+        for tech, tech_keywords in self.keyword_extractors.items():
+            if any(kw in product_lower for kw in tech_keywords):
+                keywords.update(tech_keywords)
+        
+        # Remove common stop words
+        stop_words = {'the', 'and', 'for', 'with', 'version', 'server', 'client'}
+        keywords -= stop_words
+        
+        return keywords
+    
+    def _get_vendor_aliases(self, vendor: str) -> Set[str]:
+        """Get vendor aliases and canonical names"""
+        aliases = set()
+        vendor_lower = vendor.lower().replace('_', '').replace(' ', '')
+        
+        for vendor_key, vendor_info in self.vendor_kb.items():
+            if (vendor_lower == vendor_key or 
+                vendor_lower in [alias.lower() for alias in vendor_info['aliases']]):
+                aliases.add(vendor_info['canonical'])
+                aliases.update(vendor_info['aliases'])
+                break
+        
+        return aliases
+    
+    def _extract_product_alternatives(self, cpe_product) -> Set[str]:
+        """Extract alternative product names"""
+        alternatives = set()
+        
+        # From product name variations
+        product = cpe_product.product
+        if product and product != '*':
+            # Add variations
+            alternatives.add(product.replace('_', ' '))
+            alternatives.add(product.replace('-', ' '))
+            alternatives.add(product.replace('.', ' '))
+            
+            # Common abbreviations
+            if 'server' in product:
+                alternatives.add(product.replace('server', 'srv'))
+            if 'application' in product:
+                alternatives.add(product.replace('application', 'app'))
+        
+        return alternatives
+    
+    def _categorize_product(self, cpe_product) -> Set[str]:
+        """Intelligent product categorization"""
+        categories = set()
+        
+        # Get text to analyze
+        searchable_text = f"{cpe_product.vendor} {cpe_product.product}".lower()
+        
+        # Add title text
+        for title in cpe_product.titles:
+            if hasattr(title, 'title'):
+                searchable_text += f" {title.title}".lower()
+            elif isinstance(title, dict):
+                searchable_text += f" {title.get('title', '')}".lower()
+        
+        # Apply pattern matching
+        for category, patterns in self.product_patterns.items():
+            for pattern in patterns:
+                if re.search(pattern, searchable_text):
+                    categories.add(category)
+                    break
+        
+        # Vendor-based categorization
+        vendor_lower = cpe_product.vendor.lower()
+        for vendor_key, vendor_info in self.vendor_kb.items():
+            if vendor_lower == vendor_key:
+                categories.update(vendor_info.get('categories', []))
+                break
+        
+        return categories
+    
+    def _calculate_popularity_boost(self, cpe_product) -> float:
+        """Calculate popularity boost based on vendor and categories"""
+        boost = 0.0
+        
+        # Vendor boost
+        vendor_lower = cpe_product.vendor.lower()
+        for vendor_key, vendor_info in self.vendor_kb.items():
+            if vendor_lower == vendor_key:
+                boost += vendor_info.get('boost', 0)
+                break
+        
+        # Category boost
+        for category in cpe_product.categories:
+            weight = self.category_rules.get(category, 0.5)
+            boost += weight * 0.5  # Scale down category boost
+        
+        # Recency boost (if product has recent last_modified)
+        if hasattr(cpe_product, 'last_modified') and cpe_product.last_modified:
+            from datetime import datetime, timedelta
+            if cpe_product.last_modified > datetime.now() - timedelta(days=365):
+                boost += 1.0
+        
+        return boost
+    
+    def _rebuild_searchable_text(self, cpe_product) -> None:
+        """Rebuild searchable text with enhanced metadata"""
+        components = [
+            cpe_product.vendor,
+            cpe_product.product,
+            cpe_product.version if cpe_product.version != '*' else '',
+        ]
+        
+        # Add enhanced data
+        components.extend(cpe_product.keywords)
+        components.extend(cpe_product.alternative_names)
+        components.extend(cpe_product.vendor_aliases)
+        components.extend(cpe_product.categories)
+        
+        # Add title text
+        for title in cpe_product.titles:
+            if hasattr(title, 'title'):
+                components.append(title.title)
+            elif isinstance(title, dict):
+                components.append(title.get('title', ''))
+        
+        # Clean and combine
+        clean_components = [str(c).strip() for c in components if c and str(c).strip()]
+        cpe_product.searchable_text = ' '.join(clean_components).lower()
+        
+        # Rebuild search tokens
+        cpe_product.search_tokens = set(re.findall(r'\b\w{2,}\b', cpe_product.searchable_text))
