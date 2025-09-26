@@ -8,6 +8,8 @@ from pydantic import BaseModel, EmailStr
 from datetime import timedelta, datetime
 from typing import Optional, List
 import json
+from fastapi.security import OAuth2PasswordRequestForm
+
 
 router = APIRouter()
 security = HTTPBearer()
@@ -179,3 +181,42 @@ async def get_users(
     
     users = db.query(User).filter(User.is_active == True).offset(skip).limit(limit).all()
     return [UserProfile.from_orm(user) for user in users]
+
+@router.post("/token", response_model=Token)
+async def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+):
+    """OAuth2 compatible token endpoint"""
+    user = db.query(User).filter(
+        (User.username == form_data.username) | (User.email == form_data.username)
+    ).first()
+    
+    if not user or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Account is deactivated"
+        )
+    
+    # Update last login
+    user.last_login = datetime.utcnow()
+    db.commit()
+    
+    access_token_expires = timedelta(hours=8)
+    access_token = create_access_token(
+        data={"sub": user.username, "user_id": user.id}, 
+        expires_delta=access_token_expires
+    )
+    
+    return {
+        "access_token": access_token, 
+        "token_type": "bearer",
+        "user": UserProfile.from_orm(user)
+    }
